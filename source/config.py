@@ -20,6 +20,7 @@ class VehicleConfig:
     v_max_mps: float
     curvature_epsilon: float
     v_min_mps: float
+    power_limit_w: float | None = None
 
 
 def load_vehicle_config(config_path: Path | None = None) -> VehicleConfig:
@@ -36,4 +37,5 @@ def load_vehicle_config(config_path: Path | None = None) -> VehicleConfig:
         v_max_mps=float(values["v_max_mps"]),
         curvature_epsilon=float(values["curvature_epsilon"]),
         v_min_mps=float(values["v_min_mps"]),
+        power_limit_w=None if values.get("power_limit_w") is None else float(values["power_limit_w"]),
     )

@@ -199,6 +199,7 @@ The vehicle configuration should include:
   "brake_max_mps2": 8.0,
    "mu": 1.4,
    "F_z_n": 7848.0,
+   "power_limit_w": 200000.0,
   "v_max_mps": 90.0,
   "curvature_epsilon": 1e-6,
   "v_min_mps": 1.0
@@ -237,7 +238,18 @@ $$
 \frac{d(v^2)}{ds}=2a_x.
 $$
 
-Using maximum acceleration \(a_{x,\max}\), the forward update is
+Using the smaller of the low-speed engine limit and the power-limited acceleration,
+
+$$
+a_{x,\mathrm{drive}}(v)
+=
+\min\left(
+a_{x,\max},
+\frac{P_{\max}}{m\,\max(v,v_{\min})}
+\right),
+$$
+
+the forward update is
 
 $$
 v^f_0 = 0,
@@ -250,11 +262,11 @@ v^f_{i+1}
 =
 \min\left(
 v_{cap,i+1},
-\sqrt{(v^f_i)^2 + 2a_{x,\max}\Delta s_i}
+\sqrt{(v^f_i)^2 + 2a_{x,\mathrm{drive}}\!(v)\,\Delta s_i}
 \right).
 $$
 
-This pass prevents the vehicle from instantly accelerating to the curvature-based speed cap and enforces the standing-start boundary condition at the chosen lap start.
+This pass prevents the vehicle from instantly accelerating to the curvature-based speed cap, enforces the standing-start boundary condition at the chosen lap start, and reduces available acceleration at higher speed.
 
 ### 9.3 Pass 3: Backward Braking Integration
 
@@ -306,7 +318,7 @@ $$
 For forward acceleration:
 
 $$
-r_{acc}=\max_i\left(v_{i+1}^2-v_i^2-2a_{x,\max}\Delta s_i\right).
+r_{acc}=\max_i\left(a_{x,i}-a_{x,\mathrm{drive},i}\right).
 $$
 
 For braking:

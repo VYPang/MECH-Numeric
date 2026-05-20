@@ -107,8 +107,8 @@ def _render_speed_profile_table(track_name: str, result) -> None:
     table.add_row("Max longitudinal accel (m/s^2)", f"{max(result.longitudinal_accel_mps2):.3f}")
     table.add_row("Max braking accel (m/s^2)", f"{min(result.longitudinal_accel_mps2):.3f}")
     table.add_row("Lateral residual (m/s^2)", f"{result.residuals.lateral_mps2:.6e}")
-    table.add_row("Acceleration residual (m^2/s^2)", f"{result.residuals.acceleration_m2ps2:.6e}")
-    table.add_row("Braking residual (m^2/s^2)", f"{result.residuals.braking_m2ps2:.6e}")
+    table.add_row("Acceleration residual (m/s^2)", f"{result.residuals.acceleration_mps2:.6e}")
+    table.add_row("Braking residual (m/s^2)", f"{result.residuals.braking_mps2:.6e}")
     table.add_row("Friction-circle residual (m/s^2)", f"{result.residuals.friction_circle_mps2:.6e}")
     console.print(table)
 

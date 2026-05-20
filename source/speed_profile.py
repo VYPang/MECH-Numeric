@@ -18,8 +18,8 @@ class IntegrationComparison:
 @dataclass(frozen=True)
 class ConstraintResiduals:
     lateral_mps2: float
-    acceleration_m2ps2: float
-    braking_m2ps2: float
+    acceleration_mps2: float
+    braking_mps2: float
     friction_circle_mps2: float
 
 
@@ -93,10 +93,14 @@ def _segment_lengths_for_profile(profile: CurvatureProfile) -> list[float]:
 
 
 def compute_total_friction_accel_limit(config: VehicleConfig) -> float:
-    gravitational_accel = 9.81
-    vehicle_mass_kg = config.F_z_n / gravitational_accel
+    vehicle_mass_kg = compute_vehicle_mass_kg(config)
     friction_force_n = config.mu * config.F_z_n
     return friction_force_n / vehicle_mass_kg
+
+
+def compute_vehicle_mass_kg(config: VehicleConfig) -> float:
+    gravitational_accel = 9.81
+    return config.F_z_n / gravitational_accel
 
 
 def compute_lateral_speed_cap(curvature: list[float], config: VehicleConfig, friction_total_accel: float) -> list[float]:
@@ -105,6 +109,40 @@ def compute_lateral_speed_cap(curvature: list[float], config: VehicleConfig, fri
         min(config.v_max_mps, math.sqrt(lateral_cap / (abs(value) + config.curvature_epsilon)))
         for value in curvature
     ]
+
+
+def compute_power_limited_accel(speed_mps: float, config: VehicleConfig) -> float:
+    if config.power_limit_w is None:
+        return math.inf
+    vehicle_mass_kg = compute_vehicle_mass_kg(config)
+    effective_speed = max(speed_mps, config.v_min_mps)
+    return config.power_limit_w / (vehicle_mass_kg * effective_speed)
+
+
+def compute_drive_accel_limit(speed_mps: float, config: VehicleConfig) -> float:
+    return min(config.ax_engine_max_mps2, compute_power_limited_accel(speed_mps, config))
+
+
+def compute_available_forward_longitudinal_limit(
+    speed_mps: float,
+    curvature_abs: float,
+    config: VehicleConfig,
+    friction_total_accel: float,
+) -> float:
+    lateral_accel = speed_mps**2 * curvature_abs
+    friction_limit = compute_friction_limited_longitudinal_accel(lateral_accel, friction_total_accel)
+    return min(compute_drive_accel_limit(speed_mps, config), friction_limit)
+
+
+def compute_available_braking_limit(
+    speed_mps: float,
+    curvature_abs: float,
+    config: VehicleConfig,
+    friction_total_accel: float,
+) -> float:
+    lateral_accel = speed_mps**2 * curvature_abs
+    friction_limit = compute_friction_limited_longitudinal_accel(lateral_accel, friction_total_accel)
+    return min(config.brake_max_mps2, friction_limit)
 
 
 def _forward_pass(
@@ -117,17 +155,25 @@ def _forward_pass(
     speeds = [0.0 for _ in speed_cap_nodes]
     accel_limits: list[float] = []
     for index, length in enumerate(segment_lengths):
-        engine_limited_speed = math.sqrt(speeds[index] ** 2 + 2.0 * config.ax_engine_max_mps2 * length)
-        upper_speed = min(speed_cap_nodes[index + 1], engine_limited_speed)
+        upper_speed = speed_cap_nodes[index + 1]
         speeds[index + 1] = _solve_forward_speed_with_friction_circle(
             speeds[index],
             upper_speed,
             length,
             abs(curvature[index % len(curvature)]),
-            config.ax_engine_max_mps2,
+            config,
             friction_total_accel,
         )
-        accel_limits.append(max((speeds[index + 1] ** 2 - speeds[index] ** 2) / (2.0 * length), 0.0) if not math.isclose(length, 0.0) else 0.0)
+        accel_limits.append(
+            compute_available_forward_longitudinal_limit(
+                speeds[index + 1],
+                abs(curvature[index % len(curvature)]),
+                config,
+                friction_total_accel,
+            )
+            if not math.isclose(length, 0.0)
+            else 0.0
+        )
     return speeds, accel_limits
 
 
@@ -151,7 +197,16 @@ def _backward_pass(
             config.brake_max_mps2,
             friction_total_accel,
         )
-        brake_limits[index] = max((speeds[index] ** 2 - speeds[index + 1] ** 2) / (2.0 * segment_lengths[index]), 0.0) if not math.isclose(segment_lengths[index], 0.0) else 0.0
+        brake_limits[index] = (
+            compute_available_braking_limit(
+                speeds[index],
+                abs(curvature[index % len(curvature)]),
+                config,
+                friction_total_accel,
+            )
+            if not math.isclose(segment_lengths[index], 0.0)
+            else 0.0
+        )
     speeds[0] = 0.0
     return speeds, brake_limits
 
@@ -166,7 +221,7 @@ def _solve_forward_speed_with_friction_circle(
     speed_upper: float,
     segment_length: float,
     curvature_abs: float,
-    accel_limit: float,
+    config: VehicleConfig,
     friction_total_accel: float,
 ) -> float:
     if math.isclose(segment_length, 0.0):
@@ -179,6 +234,7 @@ def _solve_forward_speed_with_friction_circle(
         trial = 0.5 * (lower + upper)
         longitudinal_accel = (trial**2 - speed_start**2) / (2.0 * segment_length)
         lateral_accel = trial**2 * curvature_abs
+        accel_limit = compute_drive_accel_limit(trial, config)
         within_engine = longitudinal_accel <= accel_limit + 1e-12
         within_friction = math.hypot(longitudinal_accel, lateral_accel) <= friction_total_accel + 1e-12
         if within_engine and within_friction:
@@ -276,20 +332,32 @@ def compute_constraint_residuals(
         for index in range(len(speed_nodes))
     )
     acceleration_residual = max(
-        speed_nodes[index + 1] ** 2 - speed_nodes[index] ** 2 - 2.0 * config.ax_engine_max_mps2 * segment_lengths[index]
+        longitudinal_accel[index]
+        - compute_available_forward_longitudinal_limit(
+            speed_nodes[index + 1],
+            abs(curvature[index % len(curvature)]),
+            config,
+            friction_total_accel,
+        )
         for index in range(len(segment_lengths))
     )
     braking_residual = max(
-        speed_nodes[index] ** 2 - speed_nodes[index + 1] ** 2 - 2.0 * config.brake_max_mps2 * segment_lengths[index]
+        -longitudinal_accel[index]
+        - compute_available_braking_limit(
+            speed_nodes[index],
+            abs(curvature[index % len(curvature)]),
+            config,
+            friction_total_accel,
+        )
         for index in range(len(segment_lengths))
     )
     friction_circle_residual = max(
-        math.hypot(longitudinal_accel[index], speed_nodes[index] ** 2 * abs(curvature[index % len(curvature)])) - friction_total_accel
+        math.hypot(abs(longitudinal_accel[index]), speed_nodes[index] ** 2 * abs(curvature[index % len(curvature)])) - friction_total_accel
         for index in range(len(segment_lengths))
     )
     return ConstraintResiduals(
         lateral_mps2=lateral_residual,
-        acceleration_m2ps2=acceleration_residual,
-        braking_m2ps2=braking_residual,
+        acceleration_mps2=acceleration_residual,
+        braking_mps2=braking_residual,
         friction_circle_mps2=friction_circle_residual,
     )

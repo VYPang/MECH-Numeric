@@ -1,5 +1,20 @@
 # 2026_05_17 Track CLI Command and Figure Report
 
+## Update on 2026_05_20
+
+The speed-propagation model has been extended since the original report date. The forward acceleration pass no longer uses only a constant engine-acceleration cap. It now applies a speed-dependent longitudinal acceleration model of the form
+
+$$
+a_{x,\mathrm{drive}}(v)
+=
+\min\left(
+a_{x,\max},
+\frac{P_{\max}}{m\max(v,v_{\min})}
+\right),
+$$
+
+before the friction-circle feasibility check is enforced. As a result, the standing-start analysis now captures the physically expected reduction in available drive acceleration at higher speed. The braking model remains a bounded deceleration constraint, while the forward residual and braking residual are now interpreted directly in units of m/s$^2$.
+
 ## 1. Purpose and Scope
 
 This report documents the current command-line workflow for the centerline-based racing trajectory study. The emphasis is not on software implementation details, but on the numerical purpose of each command, the interpretation of the generated figures, and the mathematical structure behind the plots. The present workflow treats the given centerline as a fixed closed path, then analyzes the path geometry, the curvature discretization, and the resulting standing-start speed profile obtained from a three-pass propagation procedure.
@@ -48,13 +63,13 @@ If the raw and resampled curvature profiles are nearly identical, the track is a
 ### 2.4 `analyze-track`
 
 **Purpose.**
-This command performs the main standing-start speed analysis on a fixed path. It combines the curvature-derived lateral speed cap, the forward acceleration pass, the backward braking pass, the friction-circle feasibility check, and multiple lap-time integration formulas.
+This command performs the main standing-start speed analysis on a fixed path. It combines the curvature-derived lateral speed cap, the forward acceleration pass with a speed-dependent drive-acceleration limit, the backward braking pass, the friction-circle feasibility check, and multiple lap-time integration formulas.
 
 **Expected outcome.**
 The user receives a speed-study table containing the total path length, friction acceleration limit, several lap-time estimates, finish speed, maximum speed, and residual checks for lateral, forward, braking, and friction-circle constraints. Four figures are created to visualize the speed field on the path, the speed profile versus arc length, the longitudinal acceleration profile, and the spread among numerical integration estimates.
 
 **Technical interpretation.**
-This is the first command that converts the geometric path into a dynamic performance estimate. Its value is twofold: it produces a baseline lap-time estimate for the centerline, and it exposes where the vehicle is curvature-limited, acceleration-limited, or braking-limited.
+This is the first command that converts the geometric path into a dynamic performance estimate. Its value is twofold: it produces a baseline lap-time estimate for the centerline, and it exposes where the vehicle is curvature-limited, acceleration-limited, or braking-limited. Because the forward pass now includes a power-limited longitudinal model, the command also distinguishes low-speed traction-limited acceleration from high-speed power-limited acceleration.
 
 ## 3. Figure-by-Figure Interpretation
 
@@ -274,7 +289,18 @@ $$
 v_{i+1}^2 = v_i^2 + 2a_{x,i}\Delta s_i,
 $$
 
-subject to the engine cap, lateral speed cap, and friction-circle feasibility. The backward pass imposes the analogous braking constraint from the end of the lap toward the start.
+subject to the lateral speed cap and a speed-dependent drive limit,
+
+$$
+a_{x,\mathrm{drive}}(v)
+=
+\min\left(
+a_{x,\max},
+\frac{P_{\max}}{m\max(v,v_{\min})}
+\right),
+$$
+
+followed by the friction-circle feasibility condition. The backward pass imposes the analogous braking constraint from the end of the lap toward the start.
 
 **Expected outcome.**
 The forward-pass curve should begin at zero and rise until it is limited by either lateral capability or braking feasibility. The final speed profile should lie below both the forward-pass and lateral-cap curves wherever necessary.
@@ -294,7 +320,7 @@ $$
 a_{x,i} = \frac{v_{i+1}^2 - v_i^2}{2\Delta s_i}.
 $$
 
-Positive values indicate acceleration, negative values indicate braking, and values near zero indicate locally speed-capped or coasting behavior.
+Positive values indicate acceleration, negative values indicate braking, and values near zero indicate locally speed-capped or coasting behavior. In the updated model, long straights may show a gradual decay in positive acceleration as speed rises, even before braking begins, because the drive model becomes power-limited.
 
 **Expected outcome.**
 Long positive regions should correspond to straights or corner exits, while negative regions should appear before demanding corners.
@@ -367,7 +393,18 @@ $$
 v_{i+1}^2 = v_i^2 + 2a_{x,i}\Delta s_i.
 $$
 
-The forward pass uses a positive acceleration bound associated with engine capability, whereas the backward pass uses the braking limit.
+The forward pass uses a positive acceleration bound associated with engine capability and power availability:
+
+$$
+a_{x,i}
+\le
+\min\left(
+a_{x,\max},
+\frac{P_{\max}}{m\max(v_i,v_{\min})}
+\right).
+$$
+
+This means that the vehicle may be acceleration-limited by the constant low-speed engine bound, or by the speed-dependent power bound at higher speed. The backward pass uses the braking limit.
 
 ### 4.3 Friction-Circle Constraint
 
