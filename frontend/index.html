@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Centerline Baseline Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header>
+    <h1>Centerline Baseline Dashboard</h1>
+    <p class="subtitle">
+      Three-pass centerline speed profile. Used as a baseline for
+      future trajectory optimization comparisons.
+    </p>
+    <div class="controls">
+      <label>
+        Method:
+        <select id="method-select" disabled>
+          <option value="centerline_baseline" selected>Centerline baseline</option>
+          <option value="trajectory_optimized" disabled>Optimized trajectory (coming soon)</option>
+        </select>
+      </label>
+      <span id="vehicle-summary" class="vehicle-summary"></span>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>Track rankings</h2>
+      <p>
+        Sort by any column. The composite difficulty score combines
+        curvature load, speed variability, longitudinal load, and time
+        spent near the lateral grip limit (min-max normalized across the
+        loaded track set).
+      </p>
+      <div class="table-wrapper">
+        <table id="rankings-table">
+          <thead>
+            <tr>
+              <th data-key="track_name">Track</th>
+              <th data-key="difficulty_score">Difficulty</th>
+              <th data-key="performance.lap_time_s">Lap time (s)</th>
+              <th data-key="performance.average_speed_mps">Avg speed (m/s)</th>
+              <th data-key="performance.max_speed_mps">Max speed (m/s)</th>
+              <th data-key="performance.min_speed_mps">Min speed (m/s)</th>
+              <th data-key="performance.speed_stdev_mps">Speed σ (m/s)</th>
+              <th data-key="performance.mean_abs_long_accel_mps2">|a<sub>x</sub>| avg (m/s²)</th>
+              <th data-key="performance.lateral_limit_fraction">Lat-limit %</th>
+              <th data-key="geometry.total_length_m">Length (m)</th>
+              <th data-key="geometry.rms_curvature">κ<sub>rms</sub> (1/m)</th>
+              <th data-key="geometry.corner_severity_index">Corner sev.</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="rankings-status" class="status"></p>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+  <script>
+    window.dashboard.renderOverview();
+  </script>
+</body>
+</html>

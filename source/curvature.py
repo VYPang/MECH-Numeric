@@ -119,12 +119,10 @@ def resample_closed_path_by_arc_length(x: list[float], y: list[float], point_cou
     return resampled_x, resampled_y, target_s, total_length
 
 
-def compare_raw_and_resampled_curvature(track: TrackData, resampled_count: int | None = None) -> CurvatureComparison:
-    point_count = resampled_count or track.point_count
-    raw = periodic_central_difference_curvature(track.x, track.y)
+def arc_length_resampled_curvature(track: TrackData, point_count: int) -> CurvatureProfile:
     resampled_x, resampled_y, resampled_s, total_length = resample_closed_path_by_arc_length(track.x, track.y, point_count)
     resampled = periodic_central_difference_curvature(resampled_x, resampled_y, total_length)
-    resampled = CurvatureProfile(
+    return CurvatureProfile(
         method="arc-length resampled central difference",
         x=resampled.x,
         y=resampled.y,
@@ -133,6 +131,12 @@ def compare_raw_and_resampled_curvature(track: TrackData, resampled_count: int |
         total_length_m=resampled.total_length_m,
         uniform_ds_m=resampled.uniform_ds_m,
     )
+
+
+def compare_raw_and_resampled_curvature(track: TrackData, resampled_count: int | None = None) -> CurvatureComparison:
+    point_count = resampled_count or track.point_count
+    raw = periodic_central_difference_curvature(track.x, track.y)
+    resampled = arc_length_resampled_curvature(track, point_count)
 
     comparison_count = min(len(raw.curvature), len(resampled.curvature))
     differences = [raw.curvature[index] - resampled.curvature[index] for index in range(comparison_count)]

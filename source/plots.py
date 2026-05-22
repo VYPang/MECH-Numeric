@@ -12,6 +12,7 @@ from matplotlib.collections import LineCollection
 from .data_loader import PROJECT_ROOT, TrackData
 from .curvature import CurvatureComparison
 from .geometry import TrackAudit, cumulative_arc_length
+from .sensitivity import AllTracksIntegrationSensitivity, IntegrationSensitivityStudy
 from .speed_profile import SpeedProfileResult
 
 
@@ -339,7 +340,7 @@ def _save_integration_comparison_plot(track: TrackData, result: SpeedProfileResu
         result.integration.trapezoidal_time_s,
     ]
     if result.integration.simpson_time_s is not None:
-        labels.append("Simpson")
+        labels.append("Composite Simpson 1/3")
         values.append(result.integration.simpson_time_s)
 
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -351,3 +352,203 @@ def _save_integration_comparison_plot(track: TrackData, result: SpeedProfileResu
     fig.tight_layout()
     fig.savefig(output_path, dpi=200)
     return output_path
+
+
+def save_track_integration_sensitivity_plots(track: TrackData, study: IntegrationSensitivityStudy) -> list[Path]:
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    saved_paths = [
+        _save_track_integration_sensitivity_plot(track, study),
+        _save_track_curvature_sensitivity_plot(track, study),
+    ]
+    plt.close("all")
+    return saved_paths
+
+
+def save_all_tracks_integration_sensitivity_plot(summary: AllTracksIntegrationSensitivity) -> Path:
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = _save_all_tracks_integration_sensitivity_heatmap(summary)
+    plt.close("all")
+    return output_path
+
+
+def _save_track_integration_sensitivity_plot(track: TrackData, study: IntegrationSensitivityStudy) -> Path:
+    point_counts = study.point_counts
+    trapezoidal_values = [sample.trapezoidal_time_s for sample in study.samples]
+    runtime_values = [sample.solve_runtime_ms for sample in study.samples]
+    simpson_counts = [sample.point_count for sample in study.samples if sample.simpson_time_s is not None]
+    simpson_values = [sample.simpson_time_s for sample in study.samples if sample.simpson_time_s is not None]
+    trapezoidal_change_counts = point_counts[1:]
+    trapezoidal_change_values = [
+        _relative_change_pct(trapezoidal_values[index], trapezoidal_values[index - 1])
+        for index in range(1, len(trapezoidal_values))
+    ]
+    simpson_change_counts: list[int] = []
+    simpson_change_values: list[float] = []
+    previous_simpson_value: float | None = None
+    for sample in study.samples:
+        if sample.simpson_time_s is None:
+            continue
+        if previous_simpson_value is not None:
+            simpson_change_counts.append(sample.point_count)
+            simpson_change_values.append(_relative_change_pct(sample.simpson_time_s, previous_simpson_value))
+        previous_simpson_value = sample.simpson_time_s
+
+    xtick_start = 100 * (min(point_counts) // 100)
+    xtick_end = 100 * math.ceil(max(point_counts) / 100)
+    xticks = list(range(max(100, xtick_start), xtick_end + 1, 100))
+
+    fig, (ax_top, ax_bottom) = plt.subplots(
+        2,
+        1,
+        figsize=(10, 7.2),
+        sharex=True,
+        gridspec_kw={"height_ratios": [2.2, 1.2]},
+    )
+    ax_top_runtime = ax_top.twinx()
+
+    ax_top.plot(point_counts, trapezoidal_values, marker="o", color="darkorange", linewidth=1.5, label="Trapezoidal")
+    if simpson_values:
+        ax_top.plot(
+            simpson_counts,
+            simpson_values,
+            marker="s",
+            color="seagreen",
+            linewidth=1.5,
+            label="Composite Simpson 1/3",
+        )
+    ax_top_runtime.plot(
+        point_counts,
+        runtime_values,
+        marker="^",
+        color="black",
+        linewidth=1.2,
+        linestyle="--",
+        label="Computation time",
+    )
+    ax_top.axhline(
+        study.reference_trapezoidal_time_s,
+        color="darkorange",
+        linestyle="--",
+        linewidth=1.0,
+        alpha=0.7,
+        label=f"Trap reference (N={study.reference_point_count})",
+    )
+    if study.reference_simpson_time_s is not None:
+        ax_top.axhline(
+            study.reference_simpson_time_s,
+            color="seagreen",
+            linestyle=":",
+            linewidth=1.0,
+            alpha=0.7,
+            label=f"Simpson 1/3 reference (N={study.reference_point_count})",
+        )
+
+    if study.recommended_point_count is not None:
+        ax_top.axvline(
+            study.recommended_point_count,
+            color="navy",
+            linestyle="-.",
+            linewidth=1.1,
+            label=f"Recommended N={study.recommended_point_count}",
+        )
+
+    ax_bottom.plot(
+        trapezoidal_change_counts,
+        trapezoidal_change_values,
+        marker="o",
+        color="darkorange",
+        linewidth=1.5,
+        label="Trapezoidal relative change",
+    )
+    if simpson_change_values:
+        ax_bottom.plot(
+            simpson_change_counts,
+            simpson_change_values,
+            marker="s",
+            color="seagreen",
+            linewidth=1.5,
+            label="Composite Simpson 1/3 relative change",
+        )
+    if study.recommended_point_count is not None:
+        ax_bottom.axvline(study.recommended_point_count, color="navy", linestyle="-.", linewidth=1.1)
+
+    ax_top.set_title(f"{track.name} Lap-Time Sensitivity to Resampled Point Count")
+    ax_top.set_ylabel("Lap time estimate (s)")
+    ax_top_runtime.set_ylabel("Computation time (ms)")
+    ax_top.grid(True, alpha=0.3)
+    ax_bottom.set_xlabel("Resampled point count N")
+    ax_bottom.set_ylabel("relative error (%)")
+    ax_bottom.grid(True, alpha=0.3)
+    ax_bottom.set_xticks(xticks)
+
+    top_handles, top_labels = ax_top.get_legend_handles_labels()
+    runtime_handles, runtime_labels = ax_top_runtime.get_legend_handles_labels()
+    ax_top.legend(top_handles + runtime_handles, top_labels + runtime_labels, ncols=2)
+    ax_bottom.legend(ncols=2)
+    output_path = FIGURES_DIR / f"{track.name}_integration_sensitivity.png"
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    return output_path
+
+
+def _save_track_curvature_sensitivity_plot(track: TrackData, study: IntegrationSensitivityStudy) -> Path:
+    point_counts = study.point_counts
+    curvature_errors = [sample.curvature_rms_abs_error_1_per_m for sample in study.samples]
+
+    fig, ax = plt.subplots(figsize=(10, 4.2))
+    ax.plot(point_counts, curvature_errors, marker="o", color="purple", linewidth=1.5)
+    if any(error > 0.0 for error in curvature_errors):
+        ax.set_yscale("log")
+    if study.recommended_point_count is not None:
+        ax.axvline(study.recommended_point_count, color="navy", linestyle="-.", linewidth=1.1)
+    ax.set_title(f"{track.name} Curvature Sensitivity to Resampled Point Count")
+    ax.set_xlabel("Resampled point count N")
+    ax.set_ylabel(r"|RMS(\kappa) - RMS(\kappa_ref)| [1/m]")
+    ax.grid(True, alpha=0.3, which="both")
+    output_path = FIGURES_DIR / f"{track.name}_curvature_sensitivity.png"
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    return output_path
+
+
+def _save_all_tracks_integration_sensitivity_heatmap(summary: AllTracksIntegrationSensitivity) -> Path:
+    track_names = summary.ordered_track_names
+    point_counts = summary.point_counts
+    error_matrix = [
+        [summary.track_studies[track_name].sample_for_point_count(point_count).combined_abs_error_s for point_count in point_counts]
+        for track_name in track_names
+    ]
+
+    fig_height = max(6.0, 0.34 * len(track_names) + 2.5)
+    fig, ax = plt.subplots(figsize=(10, fig_height))
+    image = ax.imshow(error_matrix, aspect="auto", cmap="magma")
+    ax.set_title("All-Track Integration Sensitivity Heatmap")
+    ax.set_xlabel("Resampled point count N")
+    ax.set_ylabel("Track")
+    ax.set_xticks(range(len(point_counts)), [str(point_count) for point_count in point_counts], rotation=45, ha="right")
+    ax.set_yticks(range(len(track_names)), track_names)
+
+    if summary.global_recommended_point_count is not None:
+        recommended_index = point_counts.index(summary.global_recommended_point_count)
+        ax.axvline(
+            recommended_index,
+            color="white",
+            linestyle="--",
+            linewidth=1.3,
+            label=f"All tracks <= {summary.tolerance_s:.2f} s at N={summary.global_recommended_point_count}",
+        )
+        ax.legend(loc="upper right")
+
+    colorbar = fig.colorbar(image, ax=ax)
+    colorbar.set_label("Max(|trap-ref|, |Simpson-ref|) [s]")
+
+    output_path = FIGURES_DIR / "all_tracks_integration_sensitivity_heatmap.png"
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    return output_path
+
+
+def _relative_change_pct(current_value: float, previous_value: float) -> float:
+    if math.isclose(current_value, 0.0):
+        return 0.0
+    return 100.0 * abs((current_value - previous_value) / current_value)

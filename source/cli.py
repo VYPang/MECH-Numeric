@@ -11,12 +11,26 @@ from .config import load_vehicle_config
 from .curvature import compare_raw_and_resampled_curvature, validate_curvature_on_circle
 from .data_loader import list_track_names, load_track
 from .geometry import audit_track
-from .plots import save_audit_plots, save_curvature_comparison_plots, save_speed_profile_plots
+from .plots import (
+    save_all_tracks_integration_sensitivity_plot,
+    save_audit_plots,
+    save_curvature_comparison_plots,
+    save_speed_profile_plots,
+    save_track_integration_sensitivity_plots,
+)
+from .sensitivity import (
+    DEFAULT_POINT_COUNTS,
+    compute_all_tracks_integration_sensitivity,
+    compute_track_integration_sensitivity,
+)
 from .speed_profile import compute_speed_profile
 
 
 app = typer.Typer(help="Track analysis CLI for three-pass racing-line experiments.")
 console = Console()
+DEFAULT_SENSITIVITY_START_COUNT = min(DEFAULT_POINT_COUNTS)
+DEFAULT_SENSITIVITY_END_COUNT = max(DEFAULT_POINT_COUNTS)
+DEFAULT_SENSITIVITY_STEP_COUNT = DEFAULT_POINT_COUNTS[1] - DEFAULT_POINT_COUNTS[0] if len(DEFAULT_POINT_COUNTS) > 1 else 100
 
 
 def _validate_track_name(track_name: str) -> str:
@@ -111,6 +125,93 @@ def _render_speed_profile_table(track_name: str, result) -> None:
     table.add_row("Braking residual (m/s^2)", f"{result.residuals.braking_mps2:.6e}")
     table.add_row("Friction-circle residual (m/s^2)", f"{result.residuals.friction_circle_mps2:.6e}")
     console.print(table)
+
+
+def _build_point_counts(start_count: int, end_count: int, step_count: int) -> list[int]:
+    if start_count < 4:
+        raise typer.BadParameter("Start count must be at least 4.")
+    if end_count < start_count:
+        raise typer.BadParameter("End count must be greater than or equal to start count.")
+    if step_count <= 0:
+        raise typer.BadParameter("Step count must be positive.")
+
+    return list(range(start_count, end_count + 1, step_count))
+
+
+def _render_track_integration_sensitivity_table(track_name: str, study) -> None:
+    table = Table(title=f"{track_name} Integration Sensitivity")
+    table.add_column("N", justify="right")
+    table.add_column("Mean ds (m)", justify="right")
+    table.add_column("Trap (s)", justify="right")
+    table.add_column("Simpson (s)", justify="right")
+    table.add_column("|Trap-ref| (s)", justify="right")
+    table.add_column("|Simp-ref| (s)", justify="right")
+    table.add_column("|RMS(k)-ref|", justify="right")
+    for sample in study.samples:
+        simpson_value = "n/a" if sample.simpson_time_s is None else f"{sample.simpson_time_s:.3f}"
+        simpson_error = "n/a" if sample.simpson_abs_error_s is None else f"{sample.simpson_abs_error_s:.4f}"
+        table.add_row(
+            str(sample.point_count),
+            f"{sample.mean_ds_m:.3f}",
+            f"{sample.trapezoidal_time_s:.3f}",
+            simpson_value,
+            f"{sample.trapezoidal_abs_error_s:.4f}",
+            simpson_error,
+            f"{sample.curvature_rms_abs_error_1_per_m:.3e}",
+        )
+    console.print(table)
+
+    console.print(
+        "Reference: "
+        f"N={study.reference_point_count}, mean ds={study.reference_mean_ds_m:.3f} m, "
+        f"trap={study.reference_trapezoidal_time_s:.3f} s, "
+        f"Simpson={study.reference_simpson_time_s:.3f} s"
+        if study.reference_simpson_time_s is not None
+        else "Reference Simpson not available"
+    )
+    if study.recommended_point_count is None:
+        console.print(f"[yellow]No sweep point count satisfies the {study.tolerance_s:.3f} s tolerance.[/yellow]")
+    else:
+        console.print(
+            f"[green]Recommended point count:[/green] {study.recommended_point_count} "
+            f"(mean ds {study.recommended_mean_ds_m:.3f} m, tolerance {study.tolerance_s:.3f} s)"
+        )
+
+
+def _render_all_tracks_sensitivity_tables(summary) -> None:
+    count_table = Table(title="All-Track Sensitivity by Point Count")
+    count_table.add_column("N", justify="right")
+    count_table.add_column("Tracks within tol", justify="right")
+    count_table.add_column("Worst track", style="cyan")
+    count_table.add_column("Worst error (s)", justify="right")
+    for point_count in summary.point_counts:
+        worst_track, worst_error = summary.worst_track_for_point_count(point_count)
+        count_table.add_row(
+            str(point_count),
+            f"{summary.counts_within_tolerance(point_count)}/{len(summary.track_studies)}",
+            worst_track,
+            f"{worst_error:.4f}",
+        )
+    console.print(count_table)
+
+    track_table = Table(title="Per-Track Recommended Point Count")
+    track_table.add_column("Track", style="cyan")
+    track_table.add_column("Recommended N", justify="right")
+    track_table.add_column("Mean ds (m)", justify="right")
+    for track_name in summary.ordered_track_names:
+        study = summary.track_studies[track_name]
+        recommended_n = "n/a" if study.recommended_point_count is None else str(study.recommended_point_count)
+        recommended_ds = "n/a" if study.recommended_mean_ds_m is None else f"{study.recommended_mean_ds_m:.3f}"
+        track_table.add_row(track_name, recommended_n, recommended_ds)
+    console.print(track_table)
+
+    if summary.global_recommended_point_count is None:
+        console.print(f"[yellow]No global point count satisfies the {summary.tolerance_s:.3f} s tolerance for every track.[/yellow]")
+    else:
+        console.print(
+            f"[green]Global recommended point count:[/green] {summary.global_recommended_point_count} "
+            f"for tolerance {summary.tolerance_s:.3f} s"
+        )
 
 
 @app.command("list-tracks")
@@ -210,6 +311,111 @@ def analyze_track_command(
         console.print("[green]Saved plots:[/green]")
         for path in saved_paths:
             console.print(f"- {Path(path)}")
+
+
+@app.command("sensitivity-track")
+def sensitivity_track_command(
+    track: str = typer.Option(..., "--track", "-t", prompt="Track name"),
+    start_count: int = typer.Option(
+        DEFAULT_SENSITIVITY_START_COUNT,
+        "--start-count",
+        help="First resampled point count in the sensitivity sweep.",
+    ),
+    end_count: int = typer.Option(
+        DEFAULT_SENSITIVITY_END_COUNT,
+        "--end-count",
+        help="Last resampled point count in the sensitivity sweep.",
+    ),
+    step_count: int = typer.Option(
+        DEFAULT_SENSITIVITY_STEP_COUNT,
+        "--step-count",
+        help="Increment between successive resampled point counts.",
+    ),
+    reference_count: int | None = typer.Option(
+        None,
+        "--reference-count",
+        help="Reference resampled point count used for the fine-grid comparison.",
+    ),
+    tolerance_s: float = typer.Option(0.1, "--tolerance-s", help="Absolute lap-time error tolerance in seconds."),
+    save_plots: bool = typer.Option(True, "--save-plots/--no-save-plots", help="Save sensitivity plots."),
+) -> None:
+    """Sweep resampled point counts for one track and compare lap-time convergence."""
+    track_name = _validate_track_name(track)
+    point_counts = _build_point_counts(start_count, end_count, step_count)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task(description=f"Running integration sensitivity study for {track_name}", total=None)
+        track_data = load_track(track_name)
+        config = load_vehicle_config()
+        study = compute_track_integration_sensitivity(
+            track_data,
+            config,
+            point_counts,
+            reference_point_count=reference_count,
+            tolerance_s=tolerance_s,
+        )
+
+    _render_track_integration_sensitivity_table(track_name, study)
+
+    if save_plots:
+        saved_paths = save_track_integration_sensitivity_plots(track_data, study)
+        console.print("[green]Saved plots:[/green]")
+        for path in saved_paths:
+            console.print(f"- {Path(path)}")
+
+
+@app.command("sensitivity-all")
+def sensitivity_all_command(
+    start_count: int = typer.Option(
+        DEFAULT_SENSITIVITY_START_COUNT,
+        "--start-count",
+        help="First resampled point count in the sensitivity sweep.",
+    ),
+    end_count: int = typer.Option(
+        DEFAULT_SENSITIVITY_END_COUNT,
+        "--end-count",
+        help="Last resampled point count in the sensitivity sweep.",
+    ),
+    step_count: int = typer.Option(
+        DEFAULT_SENSITIVITY_STEP_COUNT,
+        "--step-count",
+        help="Increment between successive resampled point counts.",
+    ),
+    reference_count: int | None = typer.Option(
+        None,
+        "--reference-count",
+        help="Reference resampled point count used for the fine-grid comparison.",
+    ),
+    tolerance_s: float = typer.Option(0.1, "--tolerance-s", help="Absolute lap-time error tolerance in seconds."),
+    save_plot: bool = typer.Option(True, "--save-plot/--no-save-plot", help="Save the all-track sensitivity heatmap."),
+) -> None:
+    """Run the segmentation sensitivity study across all tracks."""
+    point_counts = _build_point_counts(start_count, end_count, step_count)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task(description="Running all-track integration sensitivity study", total=None)
+        config = load_vehicle_config()
+        summary = compute_all_tracks_integration_sensitivity(
+            config,
+            point_counts,
+            reference_point_count=reference_count,
+            tolerance_s=tolerance_s,
+        )
+
+    _render_all_tracks_sensitivity_tables(summary)
+
+    if save_plot:
+        saved_path = save_all_tracks_integration_sensitivity_plot(summary)
+        console.print("[green]Saved plot:[/green]")
+        console.print(f"- {Path(saved_path)}")
 
 
 if __name__ == "__main__":
