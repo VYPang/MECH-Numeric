@@ -1,21 +1,25 @@
 {
-  "ay_max_mps2": 13.7,
-  "ax_engine_max_mps2": 4.0,
-  "brake_max_mps2": 8.0,
-  "mu": 1.4,
-  "F_z_n": 7848.0,
-  "power_limit_w": 200000.0,
-  "v_max_mps": 90.0,
-  "curvature_epsilon": 1e-6,
-  "v_min_mps": 1.0,
-  "path_optimization_reg_lambda": 1e-6,
-  "path_optimization_b_max_iters": 8,
-  "path_optimization_b_eps_m": 0.01,
-  "path_optimization_b_alpha0": 1.0,
-  "path_optimization_b_gtol": 1e-4,
-  "path_optimization_b_ftol_s": 1e-3,
-  "path_optimization_b_beta": 0.5,
-  "path_optimization_b_n_jobs": 8,
-  "path_optimization_c_apg_max_iters": 2000,
-  "path_optimization_c_apg_tol": 1e-6
+  "vehicle": {
+    "ay_max_mps2": 13.7,
+    "ax_engine_max_mps2": 4.0,
+    "brake_max_mps2": 8.0,
+    "mu": 1.4,
+    "F_z_n": 7848.0,
+    "power_limit_w": 200000.0,
+    "v_max_mps": 90.0,
+    "curvature_epsilon": 1e-6,
+    "v_min_mps": 1.0
+  },
+  "optimization": {
+    "path_optimization_reg_lambda": 1e-6,
+    "path_optimization_b_max_iters": 8,
+    "path_optimization_b_eps_m": 0.01,
+    "path_optimization_b_alpha0": 1.0,
+    "path_optimization_b_gtol": 1e-4,
+    "path_optimization_b_ftol_s": 1e-3,
+    "path_optimization_b_beta": 0.5,
+    "path_optimization_b_n_jobs": 8,
+    "path_optimization_c_apg_max_iters": 2000,
+    "path_optimization_c_apg_tol": 1e-6
+  }
 }

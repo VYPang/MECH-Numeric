@@ -7,7 +7,7 @@ can be added without changing the API contract.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import json
 from pathlib import Path
 import shutil
@@ -51,7 +51,7 @@ SUPPORTED_METHODS = (
 )
 WEB_CACHE_DIR = PROJECT_ROOT / "outputs" / "web_cache"
 CACHE_MANIFEST_PATH = WEB_CACHE_DIR / "manifest.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -241,7 +241,14 @@ class AnalysisService:
         except (OSError, json.JSONDecodeError):
             return False
 
-        if manifest.get("signature") != self._cache_signature():
+        signatures = manifest.get("signatures")
+        if not isinstance(signatures, dict):
+            return False
+
+        if signatures.get("vehicle") != self._vehicle_signature():
+            return False
+
+        if signatures.get("optimization") != self._optimization_signature():
             return False
 
         payloads: dict[tuple[str, str], dict[str, Any]] = {}
@@ -266,6 +273,87 @@ class AnalysisService:
             self._cache.difficulty_scores_by_method = dict(difficulty_scores)
         return True
 
+    def load_persisted_optimization_cache(self) -> bool:
+        manifest_path = self._manifest_path()
+        if not manifest_path.exists():
+            return False
+
+        try:
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            return False
+
+        signatures = manifest.get("signatures")
+        if not isinstance(signatures, dict):
+            return False
+
+        if signatures.get("optimization") != self._optimization_signature():
+            return False
+
+        payloads: dict[tuple[str, str], dict[str, Any]] = {}
+        tracks_by_method = manifest.get("tracks_by_method", {})
+        for method in SUPPORTED_METHODS:
+            for track_name in tracks_by_method.get(method, []):
+                payload_path = self._payload_path(method, track_name)
+                if not payload_path.exists():
+                    return False
+                try:
+                    with payload_path.open("r", encoding="utf-8") as handle:
+                        payloads[(track_name, method)] = json.load(handle)
+                except (OSError, json.JSONDecodeError):
+                    return False
+
+        difficulty_scores = manifest.get("difficulty_scores_by_method", {})
+        with self._lock:
+            self._payload_cache = _PayloadCache(
+                by_track_method=payloads,
+                difficulty_scores_by_method=difficulty_scores,
+            )
+            self._cache = _AnalysisCache(difficulty_scores_by_method=dict(difficulty_scores))
+        return True
+
+    def refresh_vehicle_cache(
+        self,
+        progress_callback: Callable[[str, str, int, int], None] | None = None,
+        persist: bool = False,
+    ) -> None:
+        with self._lock:
+            payload_items = list(self._payload_cache.by_track_method.items())
+
+        if not payload_items:
+            raise RuntimeError("No cached payloads are loaded for vehicle-only refresh.")
+
+        total = len(payload_items)
+        refreshed_payloads: dict[tuple[str, str], dict[str, Any]] = {}
+        for completed, ((track_name, method), payload) in enumerate(payload_items, start=1):
+            refreshed_payloads[(track_name, method)] = refresh_payload_vehicle_data(
+                payload,
+                self._vehicle_config,
+            )
+            if progress_callback is not None:
+                progress_callback(method, track_name, completed, total)
+
+        difficulty_scores: dict[str, dict[str, float]] = {}
+        for method in SUPPORTED_METHODS:
+            metrics_by_track = {
+                track_name: _payload_to_metrics(payload)
+                for (track_name, payload_method), payload in refreshed_payloads.items()
+                if payload_method == method
+            }
+            if metrics_by_track:
+                difficulty_scores[method] = compute_difficulty_scores(metrics_by_track)
+
+        with self._lock:
+            self._payload_cache = _PayloadCache(
+                by_track_method=refreshed_payloads,
+                difficulty_scores_by_method=difficulty_scores,
+            )
+            self._cache = _AnalysisCache(difficulty_scores_by_method=dict(difficulty_scores))
+
+        if persist:
+            self.save_persisted_cache()
+
     def save_persisted_cache(self) -> None:
         payload_items = dict(self._payload_cache.by_track_method)
         difficulty_scores = dict(self._payload_cache.difficulty_scores_by_method)
@@ -282,7 +370,10 @@ class AnalysisService:
             tracks_by_method[method].append(track_name)
 
         manifest = {
-            "signature": self._cache_signature(),
+            "signatures": {
+                "vehicle": self._vehicle_signature(),
+                "optimization": self._optimization_signature(),
+            },
             "tracks_by_method": {
                 method: sorted(track_names)
                 for method, track_names in tracks_by_method.items()
@@ -563,10 +654,16 @@ class AnalysisService:
             path_offset_m=final_iteration.e_opt.tolist(),
         )
 
-    def _cache_signature(self) -> dict[str, Any]:
+    def _vehicle_signature(self) -> dict[str, Any]:
         return {
             "cache_version": CACHE_VERSION,
-            "vehicle_config": self._vehicle_config.to_dict(),
+            "vehicle_config": self._vehicle_config.to_vehicle_dict(),
+        }
+
+    def _optimization_signature(self) -> dict[str, Any]:
+        return {
+            "cache_version": CACHE_VERSION,
+            "optimization_config": self._vehicle_config.to_optimization_dict(),
             "supported_methods": list(SUPPORTED_METHODS),
             "track_names": self.list_track_names(),
         }
@@ -584,28 +681,15 @@ class AnalysisService:
 
 def method_to_payload(result: MethodResult) -> dict[str, Any]:
     """Plotly-ready arrays + summary fields for the track detail view."""
-    speed = result.speed
     track = result.track
     audit = result.audit
     profile = result.profile
-
-    integration = {
-        "kinematic_time_s": speed.integration.kinematic_time_s,
-        "left_rule_time_s": speed.integration.left_rule_time_s,
-        "trapezoidal_time_s": speed.integration.trapezoidal_time_s,
-        "simpson_time_s": speed.integration.simpson_time_s,
-    }
-    residuals = {
-        "lateral_mps2": speed.residuals.lateral_mps2,
-        "acceleration_mps2": speed.residuals.acceleration_mps2,
-        "braking_mps2": speed.residuals.braking_mps2,
-        "friction_circle_mps2": speed.residuals.friction_circle_mps2,
-    }
+    speed_data, integration, residuals = _speed_sections(result.speed)
 
     return {
         "track_name": result.track_name,
         "method": result.method,
-        "geometry_method": speed.geometry_method,
+        "geometry_method": result.speed.geometry_method,
         "audit": _audit_to_dict(audit),
         "track": {
             "x_m": track.x,
@@ -620,20 +704,7 @@ def method_to_payload(result: MethodResult) -> dict[str, Any]:
             "curvature_1_per_m": profile.curvature,
             "uniform_ds_m": profile.uniform_ds_m,
         },
-        "speed": {
-            "s_nodes_m": speed.s_nodes_m,
-            "s_midpoints_m": speed.s_midpoints_m,
-            "segment_lengths_m": speed.segment_lengths_m,
-            "speed_cap_mps": speed.speed_cap_mps,
-            "forward_speed_mps": speed.forward_speed_mps,
-            "final_speed_mps": speed.final_speed_mps,
-            "longitudinal_accel_mps2": speed.longitudinal_accel_mps2,
-            "lateral_accel_mps2": speed.lateral_accel_mps2,
-            "forward_longitudinal_limit_mps2": speed.forward_longitudinal_limit_mps2,
-            "braking_longitudinal_limit_mps2": speed.braking_longitudinal_limit_mps2,
-            "friction_total_accel_mps2": speed.friction_total_accel_mps2,
-            "total_length_m": speed.total_length_m,
-        },
+        "speed": speed_data,
         "integration": integration,
         "residuals": residuals,
         "metrics": result.metrics.to_dict(),
@@ -672,3 +743,69 @@ def _audit_to_dict(audit: TrackAudit) -> dict[str, Any]:
         "width_left_mean_m": audit.width_left_mean_m,
         "outlier_segment_count": len(audit.outlier_segment_indices),
     }
+
+
+def refresh_payload_vehicle_data(payload: dict[str, Any], vehicle_config: VehicleConfig) -> dict[str, Any]:
+    profile = CurvatureProfile(
+        method=str(payload.get("geometry_method", payload["method"])),
+        x=list(payload["profile"]["x_m"]),
+        y=list(payload["profile"]["y_m"]),
+        s=list(payload["profile"]["s_m"]),
+        curvature=list(payload["profile"]["curvature_1_per_m"]),
+        total_length_m=float(payload["speed"]["total_length_m"]),
+        uniform_ds_m=float(payload["profile"]["uniform_ds_m"]),
+    )
+    refreshed_speed = compute_speed_profile(profile, vehicle_config)
+    speed_data, integration, residuals = _speed_sections(refreshed_speed)
+    performance = compute_performance_metrics(
+        lap_time_s=refreshed_speed.integration.trapezoidal_time_s,
+        total_length_m=refreshed_speed.total_length_m,
+        final_speed_mps=refreshed_speed.final_speed_mps,
+        longitudinal_accel_mps2=refreshed_speed.longitudinal_accel_mps2,
+        lateral_accel_mps2=refreshed_speed.lateral_accel_mps2,
+        ay_max_mps2=vehicle_config.ay_max_mps2,
+    )
+
+    return {
+        **payload,
+        "geometry_method": refreshed_speed.geometry_method,
+        "speed": speed_data,
+        "integration": integration,
+        "residuals": residuals,
+        "metrics": {
+            "track_name": payload["metrics"]["track_name"],
+            "method": payload["metrics"]["method"],
+            "geometry": dict(payload["metrics"]["geometry"]),
+            "performance": asdict(performance),
+        },
+    }
+
+
+def _speed_sections(speed: SpeedProfileResult) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    speed_data = {
+        "s_nodes_m": speed.s_nodes_m,
+        "s_midpoints_m": speed.s_midpoints_m,
+        "segment_lengths_m": speed.segment_lengths_m,
+        "speed_cap_mps": speed.speed_cap_mps,
+        "forward_speed_mps": speed.forward_speed_mps,
+        "final_speed_mps": speed.final_speed_mps,
+        "longitudinal_accel_mps2": speed.longitudinal_accel_mps2,
+        "lateral_accel_mps2": speed.lateral_accel_mps2,
+        "forward_longitudinal_limit_mps2": speed.forward_longitudinal_limit_mps2,
+        "braking_longitudinal_limit_mps2": speed.braking_longitudinal_limit_mps2,
+        "friction_total_accel_mps2": speed.friction_total_accel_mps2,
+        "total_length_m": speed.total_length_m,
+    }
+    integration = {
+        "kinematic_time_s": speed.integration.kinematic_time_s,
+        "left_rule_time_s": speed.integration.left_rule_time_s,
+        "trapezoidal_time_s": speed.integration.trapezoidal_time_s,
+        "simpson_time_s": speed.integration.simpson_time_s,
+    }
+    residuals = {
+        "lateral_mps2": speed.residuals.lateral_mps2,
+        "acceleration_mps2": speed.residuals.acceleration_mps2,
+        "braking_mps2": speed.residuals.braking_mps2,
+        "friction_circle_mps2": speed.residuals.friction_circle_mps2,
+    }
+    return speed_data, integration, residuals
