@@ -24,6 +24,14 @@
   };
 
   const DEFAULT_METHOD = "centerline_baseline";
+  const DEFAULT_COMPARE_METHOD = "min_lap_time";
+  const METHOD_COLORS = {
+    centerline_baseline: "#f5f7fa",
+    min_curvature: "#4cc2ff",
+    min_lap_time: "#ffb86c",
+    min_curvature_custom: "#58d68d",
+  };
+  let vehicleConfigPromise = null;
 
   function getJSON(url) {
     return fetch(url).then((response) => {
@@ -47,6 +55,28 @@
     return value.toFixed(decimals);
   }
 
+  function formatSigned(value, decimals = 3) {
+    if (value === null || value === undefined || Number.isNaN(value)) return "—";
+    const sign = value > 0 ? "+" : "";
+    return `${sign}${formatNumber(value, decimals)}`;
+  }
+
+  function percentDelta(compareValue, referenceValue) {
+    if (!Number.isFinite(compareValue) || !Number.isFinite(referenceValue) || referenceValue === 0) return null;
+    return ((compareValue - referenceValue) / referenceValue) * 100;
+  }
+
+  function methodColor(method) {
+    return METHOD_COLORS[normalizeMethod(method)] || "#4cc2ff";
+  }
+
+  function getVehicleConfig() {
+    if (!vehicleConfigPromise) {
+      vehicleConfigPromise = getJSON("/api/vehicle").catch(() => null);
+    }
+    return vehicleConfigPromise;
+  }
+
   function normalizeMethod(method) {
     return METHOD_LABELS[method] ? method : DEFAULT_METHOD;
   }
@@ -63,6 +93,11 @@
       .join("");
     selectEl.value = method;
     selectEl.disabled = false;
+  }
+
+  function populateComparisonSelects(referenceSelect, compareSelect, referenceMethod, compareMethod) {
+    populateMethodSelect(referenceSelect, referenceMethod);
+    populateMethodSelect(compareSelect, compareMethod);
   }
 
   function wrapClosed(values) {
@@ -133,6 +168,15 @@
     return { accel, brake };
   }
 
+  function getEventCounts(payload) {
+    const events = extractTrackEvents(payload);
+    return {
+      accel: events.accel.length,
+      brake: events.brake.length,
+      transitions: payload.metrics.performance.phase_transition_count,
+    };
+  }
+
   function computeStartArrow(payload) {
     const xs = payload.profile.x_m;
     const ys = payload.profile.y_m;
@@ -154,6 +198,178 @@
       tailY: ys[0],
       headX: xs[0] + (dx / norm) * arrowLength,
       headY: ys[0] + (dy / norm) * arrowLength,
+    };
+  }
+
+  function clampOpacityPercent(value, fallback) {
+    if (value === null || value === undefined || value === "") return fallback;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(10, Math.min(100, Math.round(numeric)));
+  }
+
+  function sharedSpeedRange(vehicleConfig, ...payloads) {
+    if (vehicleConfig && Number.isFinite(vehicleConfig.v_min_mps) && Number.isFinite(vehicleConfig.v_max_mps)) {
+      return {
+        cmin: vehicleConfig.v_min_mps,
+        cmax: vehicleConfig.v_max_mps > vehicleConfig.v_min_mps ? vehicleConfig.v_max_mps : vehicleConfig.v_min_mps + 1,
+      };
+    }
+
+    const values = payloads
+      .flatMap((payload) => {
+        if (!payload || !payload.speed) return [];
+        return [
+          ...(payload.speed.final_speed_mps || []),
+          ...(payload.speed.speed_cap_mps || []),
+          ...(payload.speed.forward_speed_mps || []),
+        ];
+      })
+      .filter((value) => Number.isFinite(value));
+    const min = values.length ? Math.min(...values) : 0;
+    const max = values.length ? Math.max(...values) : 1;
+    return {
+      cmin: min,
+      cmax: max > min ? max : min + 1,
+    };
+  }
+
+  function buildTrackMapFigure(payload, speedRange, options = {}) {
+    const showLegend = options.showLegend ?? true;
+    const titleText = options.title ?? null;
+    const showColorBar = options.showColorBar ?? true;
+    const colorBarTitle = options.colorBarTitle ?? "Speed (m/s)";
+    const margin = options.margin ?? { l: 40, r: 28, t: titleText ? 42 : 28, b: 40 };
+
+    const track = payload.track;
+    const speed = payload.speed;
+    const nodeSpeed = speed.final_speed_mps.slice(0, payload.profile.x_m.length);
+    const boundaries = computeTrackBoundaries(track);
+    const events = extractTrackEvents(payload);
+    const startArrow = computeStartArrow(payload);
+    const traces = [
+      {
+        x: wrapClosed(boundaries.left.map((point) => point.x)),
+        y: wrapClosed(boundaries.left.map((point) => point.y)),
+        mode: "lines",
+        line: { color: "#667085", width: 1.2 },
+        name: "Left boundary",
+        hoverinfo: "skip",
+      },
+      {
+        x: wrapClosed(boundaries.right.map((point) => point.x)),
+        y: wrapClosed(boundaries.right.map((point) => point.y)),
+        mode: "lines",
+        line: { color: "#667085", width: 1.2 },
+        name: "Right boundary",
+        hoverinfo: "skip",
+      },
+      {
+        x: wrapClosed(payload.profile.x_m),
+        y: wrapClosed(payload.profile.y_m),
+        mode: "lines",
+        line: { color: "rgba(255,255,255,0.28)", width: 0.9 },
+        name: "Trajectory",
+        hoverinfo: "skip",
+      },
+      {
+        x: payload.profile.x_m,
+        y: payload.profile.y_m,
+        mode: "markers",
+        marker: {
+          size: 5,
+          color: nodeSpeed,
+          colorscale: TURBO_SPEED_COLORSCALE,
+          cmin: speedRange.cmin,
+          cmax: speedRange.cmax,
+          showscale: showColorBar,
+          colorbar: showColorBar ? { title: colorBarTitle, thickness: 14 } : undefined,
+        },
+        text: nodeSpeed.map(
+          (value, index) => `s=${formatNumber(payload.speed.s_nodes_m[index])} m<br>v=${formatNumber(value)} m/s`,
+        ),
+        hoverinfo: "text",
+        name: "Speed sample",
+      },
+      {
+        x: events.accel.map((point) => point.x),
+        y: events.accel.map((point) => point.y),
+        mode: "markers+text",
+        marker: { size: 10, color: "#58d68d", line: { color: "#0f1115", width: 1 } },
+        text: events.accel.map(() => "A"),
+        textposition: "top center",
+        textfont: { color: "#58d68d", size: 11 },
+        hovertext: events.accel.map(
+          (point) => `Accel point<br>s=${formatNumber(point.s)} m<br>a=${formatNumber(point.value)} m/s²`,
+        ),
+        hoverinfo: "text",
+        name: "Accel points",
+      },
+      {
+        x: events.brake.map((point) => point.x),
+        y: events.brake.map((point) => point.y),
+        mode: "markers+text",
+        marker: { size: 10, color: "#ff6b6b", symbol: "diamond", line: { color: "#0f1115", width: 1 } },
+        text: events.brake.map(() => "B"),
+        textposition: "bottom center",
+        textfont: { color: "#ff6b6b", size: 11 },
+        hovertext: events.brake.map(
+          (point) => `Brake point<br>s=${formatNumber(point.s)} m<br>a=${formatNumber(point.value)} m/s²`,
+        ),
+        hoverinfo: "text",
+        name: "Brake points",
+      },
+      {
+        x: [payload.profile.x_m[0]],
+        y: [payload.profile.y_m[0]],
+        mode: "markers",
+        marker: { size: 10, color: "#ff4040", symbol: "x" },
+        name: "Start (highlight)",
+        hoverinfo: "skip",
+        showlegend: false,
+      },
+    ];
+
+    return {
+      traces,
+      layout: Object.assign({}, PLOT_LAYOUT_DEFAULTS, {
+        title: titleText ? { text: titleText, font: { size: 13 } } : undefined,
+        margin,
+        yaxis: { scaleanchor: "x", scaleratio: 1, title: "y (m)" },
+        xaxis: { title: "x (m)" },
+        showlegend: showLegend,
+        legend: showLegend ? { orientation: "h", y: 1.08, x: 0.02 } : undefined,
+        annotations: [
+          {
+            x: startArrow.tailX,
+            y: startArrow.tailY,
+            xref: "x",
+            yref: "y",
+            text: "Start",
+            showarrow: false,
+            xanchor: "left",
+            yanchor: "bottom",
+            xshift: 6,
+            yshift: 6,
+            font: { color: "#f5f7fa", size: 12 },
+          },
+          {
+            x: startArrow.headX,
+            y: startArrow.headY,
+            ax: startArrow.tailX,
+            ay: startArrow.tailY,
+            xref: "x",
+            yref: "y",
+            axref: "x",
+            ayref: "y",
+            arrowhead: 3,
+            arrowsize: 1.3,
+            arrowwidth: 2.2,
+            arrowcolor: "#f5f7fa",
+            text: "",
+          },
+        ],
+      }),
     };
   }
 
@@ -264,6 +480,201 @@
     });
 
     loadRankings();
+    renderOverviewComparison(params);
+  }
+
+  function renderOverviewComparison(params) {
+    const referenceSelect = document.getElementById("comparison-reference-select");
+    const compareSelect = document.getElementById("comparison-compare-select");
+    const tbody = document.querySelector("#comparison-table tbody");
+    const status = document.getElementById("comparison-status");
+    if (!referenceSelect || !compareSelect || !tbody || !status) return;
+
+    let referenceMethod = normalizeMethod(params.get("reference_method") || DEFAULT_METHOD);
+    let compareMethod = normalizeMethod(params.get("compare_method") || DEFAULT_COMPARE_METHOD);
+    let rows = [];
+    let sortKey = "rank_shift";
+    let sortDir = -1;
+
+    populateComparisonSelects(referenceSelect, compareSelect, referenceMethod, compareMethod);
+
+    function updateUrl() {
+      params.set("reference_method", referenceMethod);
+      params.set("compare_method", compareMethod);
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+    }
+
+    function rerender() {
+      rows.sort((a, b) => {
+        const aValue = getNested(a, sortKey);
+        const bValue = getNested(b, sortKey);
+        if (typeof aValue === "string") return sortDir * aValue.localeCompare(bValue);
+        return sortDir * ((aValue ?? 0) - (bValue ?? 0));
+      });
+
+      tbody.innerHTML = rows
+        .map((row) => {
+          const href = `/track?name=${encodeURIComponent(row.track_name)}` +
+            `&method=${encodeURIComponent(compareMethod)}` +
+            `&reference_method=${encodeURIComponent(referenceMethod)}` +
+            `&compare_method=${encodeURIComponent(compareMethod)}` +
+            `&comparison_mode=1&comparison_view=side_by_side`;
+          return (
+            `<tr data-track="${row.track_name}">` +
+            `<td><a href="${href}">${row.track_name}</a></td>` +
+            `<td>${row.reference_rank}</td>` +
+            `<td>${row.compare_rank}</td>` +
+            `<td>${formatSigned(row.rank_shift, 0)}</td>` +
+            `<td>${formatSigned(row.difficulty_delta)}</td>` +
+            `<td>${formatSigned(row.lap_time_delta_s)}</td>` +
+            `<td>${formatSigned(row.lap_time_delta_pct, 2)}</td>` +
+            `<td>${formatSigned(row.transition_delta, 0)}</td>` +
+            `<td>${row.rms_curvature_delta.toExponential(2)}</td>` +
+            `<td>${formatSigned(row.length_delta_m)}</td>` +
+            `</tr>`
+          );
+        })
+        .join("");
+
+      tbody.querySelectorAll("tr").forEach((tr) => {
+        tr.addEventListener("click", (event) => {
+          if (event.target.tagName === "A") return;
+          window.location.href = `/track?name=${encodeURIComponent(tr.dataset.track)}` +
+            `&method=${encodeURIComponent(compareMethod)}` +
+            `&reference_method=${encodeURIComponent(referenceMethod)}` +
+            `&compare_method=${encodeURIComponent(compareMethod)}` +
+            `&comparison_mode=1&comparison_view=side_by_side`;
+        });
+      });
+      renderDifficultyComparisonPlot(rows, referenceMethod, compareMethod);
+    }
+
+    function buildRows(referencePayload, comparePayload) {
+      const compareByTrack = new Map(comparePayload.rows.map((row, index) => [row.track_name, { row, rank: index + 1 }]));
+      return referencePayload.rows
+        .map((referenceRow, index) => {
+          const compareEntry = compareByTrack.get(referenceRow.track_name);
+          if (!compareEntry) return null;
+          const compareRow = compareEntry.row;
+          const referenceRank = index + 1;
+          const compareRank = compareEntry.rank;
+          const referenceLap = referenceRow.performance.lap_time_s;
+          const compareLap = compareRow.performance.lap_time_s;
+          return {
+            track_name: referenceRow.track_name,
+            reference_rank: referenceRank,
+            compare_rank: compareRank,
+            rank_shift: referenceRank - compareRank,
+            reference_difficulty: referenceRow.difficulty_score,
+            compare_difficulty: compareRow.difficulty_score,
+            difficulty_delta: compareRow.difficulty_score - referenceRow.difficulty_score,
+            lap_time_delta_s: compareLap - referenceLap,
+            lap_time_delta_pct: percentDelta(compareLap, referenceLap),
+            transition_delta: compareRow.performance.phase_transition_count - referenceRow.performance.phase_transition_count,
+            rms_curvature_delta: compareRow.geometry.rms_curvature - referenceRow.geometry.rms_curvature,
+            length_delta_m: compareRow.geometry.total_length_m - referenceRow.geometry.total_length_m,
+          };
+        })
+        .filter(Boolean);
+    }
+
+    function loadComparison() {
+      updateUrl();
+      status.textContent = `Comparing ${formatMethodLabel(compareMethod)} against ${formatMethodLabel(referenceMethod)}…`;
+      tbody.innerHTML = "";
+      Promise.all([
+        getJSON(`/api/rankings?method=${encodeURIComponent(referenceMethod)}`),
+        getJSON(`/api/rankings?method=${encodeURIComponent(compareMethod)}`),
+      ])
+        .then(([referencePayload, comparePayload]) => {
+          rows = buildRows(referencePayload, comparePayload);
+          rerender();
+          status.textContent = `Compared ${rows.length} tracks. Positive rank shift means the compared method moved the track toward harder ranks.`;
+        })
+        .catch((error) => {
+          status.textContent = `Failed to load method comparison: ${error.message}`;
+        });
+    }
+
+    [referenceSelect, compareSelect].forEach((selectEl) => {
+      selectEl.addEventListener("change", () => {
+        referenceMethod = normalizeMethod(referenceSelect.value);
+        compareMethod = normalizeMethod(compareSelect.value);
+        loadComparison();
+      });
+    });
+
+    document.querySelectorAll("#comparison-table th").forEach((th) => {
+      if (th.dataset.bound === "1") return;
+      th.dataset.bound = "1";
+      th.addEventListener("click", () => {
+        const key = th.dataset.key;
+        if (!key) return;
+        if (sortKey === key) {
+          sortDir *= -1;
+        } else {
+          sortKey = key;
+          sortDir = key === "track_name" ? 1 : -1;
+        }
+        rerender();
+      });
+    });
+
+    loadComparison();
+  }
+
+  function renderDifficultyComparisonPlot(rows, referenceMethod, compareMethod) {
+    const div = document.getElementById("plot-difficulty-comparison");
+    if (!div || !window.Plotly) return;
+    const values = rows.flatMap((row) => [row.reference_difficulty, row.compare_difficulty]);
+    const minValue = Math.min(...values, 0);
+    const maxValue = Math.max(...values, 1);
+    const padding = (maxValue - minValue) * 0.08 || 0.05;
+    const axisMin = minValue - padding;
+    const axisMax = maxValue + padding;
+    const traces = [
+      {
+        x: rows.map((row) => row.reference_difficulty),
+        y: rows.map((row) => row.compare_difficulty),
+        mode: "markers",
+        marker: {
+          size: 9,
+          color: rows.map((row) => row.rank_shift),
+          colorscale: [
+            [0, "#58d68d"],
+            [0.5, "#e6e8ee"],
+            [1, "#ffb86c"],
+          ],
+          colorbar: { title: "Rank shift" },
+        },
+        text: rows.map(
+          (row) => `${row.track_name}<br>rank shift=${formatSigned(row.rank_shift, 0)}<br>lap Δ=${formatSigned(row.lap_time_delta_s)} s`,
+        ),
+        hoverinfo: "text",
+        name: "",
+        showlegend: false,
+      },
+      {
+        x: [axisMin, axisMax],
+        y: [axisMin, axisMax],
+        mode: "lines",
+        line: { color: "#667085", dash: "dash" },
+        hoverinfo: "skip",
+        name: "",
+        showlegend: false,
+      },
+    ];
+    Plotly.newPlot(
+      div,
+      traces,
+      Object.assign({}, PLOT_LAYOUT_DEFAULTS, {
+        xaxis: { title: `${formatMethodLabel(referenceMethod)} difficulty`, range: [axisMin, axisMax] },
+        yaxis: { title: `${formatMethodLabel(compareMethod)} difficulty`, range: [axisMin, axisMax] },
+        hovermode: "closest",
+        showlegend: false,
+      }),
+      { responsive: true },
+    );
   }
 
   // ---------- Track detail ----------
@@ -272,6 +683,25 @@
     const params = new URLSearchParams(window.location.search);
     const trackName = params.get("name");
     const methodSelect = document.getElementById("track-method-select");
+    const comparisonModeToggle = document.getElementById("track-comparison-mode-toggle");
+    const referenceSelect = document.getElementById("track-reference-select");
+    const compareSelect = document.getElementById("track-compare-select");
+    const comparisonViewSelect = document.getElementById("track-comparison-view-select");
+    const overlayControls = document.getElementById("comparison-overlay-controls");
+    const referenceOpacitySlider = document.getElementById("reference-opacity-slider");
+    const compareOpacitySlider = document.getElementById("compare-opacity-slider");
+    const referenceOpacityLabel = document.getElementById("reference-opacity-label");
+    const compareOpacityLabel = document.getElementById("compare-opacity-label");
+    const referenceOpacityValue = document.getElementById("reference-opacity-value");
+    const compareOpacityValue = document.getElementById("compare-opacity-value");
+    const singleMethodControls = document.getElementById("single-method-controls");
+    const singleTrackContent = document.getElementById("single-track-content");
+    const comparisonContent = document.getElementById("comparison-content");
+    const comparisonControlLabels = [
+      referenceSelect?.closest("label"),
+      compareSelect?.closest("label"),
+      comparisonViewSelect?.closest("label"),
+    ].filter(Boolean);
     const backLink = document.getElementById("track-back-link");
     if (!trackName) {
       document.getElementById("track-title").textContent = "Missing track name";
@@ -279,31 +709,79 @@
     }
 
     let activeMethod = normalizeMethod(params.get("method"));
+    let referenceMethod = normalizeMethod(params.get("reference_method") || DEFAULT_METHOD);
+    let compareMethod = normalizeMethod(params.get("compare_method") || activeMethod || DEFAULT_COMPARE_METHOD);
+    if (compareMethod === DEFAULT_METHOD && activeMethod === DEFAULT_METHOD) compareMethod = DEFAULT_COMPARE_METHOD;
+    let comparisonView = params.get("comparison_view") === "overlay" ? "overlay" : "side_by_side";
+    let comparisonMode = params.get("comparison_mode") === "1";
+    let referenceOpacity = clampOpacityPercent(params.get("reference_opacity"), 55);
+    let compareOpacity = clampOpacityPercent(params.get("compare_opacity"), 85);
+    const vehiclePromise = getVehicleConfig();
 
     document.getElementById("track-title").textContent = trackName;
     populateMethodSelect(methodSelect, activeMethod);
+    populateComparisonSelects(referenceSelect, compareSelect, referenceMethod, compareMethod);
+    if (comparisonViewSelect) comparisonViewSelect.value = comparisonView;
+    if (comparisonModeToggle) comparisonModeToggle.checked = comparisonMode;
+    if (referenceOpacitySlider) referenceOpacitySlider.value = String(referenceOpacity);
+    if (compareOpacitySlider) compareOpacitySlider.value = String(compareOpacity);
+
+    function syncOverlayControlText() {
+      if (referenceOpacityLabel) referenceOpacityLabel.textContent = `${formatMethodLabel(referenceMethod)} opacity`;
+      if (compareOpacityLabel) compareOpacityLabel.textContent = `${formatMethodLabel(compareMethod)} opacity`;
+      if (referenceOpacityValue) referenceOpacityValue.textContent = `${referenceOpacity}%`;
+      if (compareOpacityValue) compareOpacityValue.textContent = `${compareOpacity}%`;
+    }
+
+    function applyTrackDisplayMode() {
+      if (singleMethodControls) singleMethodControls.hidden = comparisonMode;
+      if (singleTrackContent) singleTrackContent.hidden = comparisonMode;
+      if (comparisonContent) {
+        comparisonContent.hidden = !comparisonMode;
+        comparisonContent.classList.toggle("comparison-mode-active", comparisonMode);
+      }
+      comparisonControlLabels.forEach((label) => {
+        label.hidden = !comparisonMode;
+      });
+      if (overlayControls) {
+        overlayControls.hidden = !comparisonMode || comparisonView !== "overlay";
+      }
+      syncOverlayControlText();
+    }
 
     function updateTrackUrl() {
       params.set("name", trackName);
       params.set("method", activeMethod);
+      params.set("reference_method", referenceMethod);
+      params.set("compare_method", compareMethod);
+      params.set("comparison_view", comparisonView);
+      if (comparisonMode) params.set("comparison_mode", "1");
+      else params.delete("comparison_mode");
+      params.set("reference_opacity", String(referenceOpacity));
+      params.set("compare_opacity", String(compareOpacity));
       window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
       if (backLink) {
-        backLink.href = `/?method=${encodeURIComponent(activeMethod)}`;
+        backLink.href = `/?method=${encodeURIComponent(activeMethod)}` +
+          `&reference_method=${encodeURIComponent(referenceMethod)}` +
+          `&compare_method=${encodeURIComponent(compareMethod)}`;
       }
     }
 
     function loadTrackDetail() {
       document.getElementById("track-subtitle").textContent =
         `Loading ${formatMethodLabel(activeMethod)} solution…`;
-      getJSON(`/api/tracks/${encodeURIComponent(trackName)}/analysis?method=${encodeURIComponent(activeMethod)}`)
-        .then((payload) => {
+      Promise.all([
+        getJSON(`/api/tracks/${encodeURIComponent(trackName)}/analysis?method=${encodeURIComponent(activeMethod)}`),
+        vehiclePromise,
+      ])
+        .then(([payload, vehicleConfig]) => {
           activeMethod = normalizeMethod(payload.method);
           if (methodSelect) methodSelect.value = activeMethod;
           updateTrackUrl();
           document.getElementById("track-subtitle").textContent =
             `Geometry: ${payload.geometry_method}`;
           renderMetricCards(payload);
-          renderTrackMap(payload);
+          renderTrackMap(payload, sharedSpeedRange(vehicleConfig, payload));
           renderSpeedPlot(payload);
           renderLongAccelPlot(payload);
           renderCurvaturePlot(payload);
@@ -319,54 +797,170 @@
     if (methodSelect) {
       methodSelect.addEventListener("change", () => {
         activeMethod = normalizeMethod(methodSelect.value);
+        if (comparisonMode) {
+          compareMethod = activeMethod;
+          if (compareSelect) compareSelect.value = compareMethod;
+        }
         updateTrackUrl();
         loadTrackDetail();
+        if (comparisonMode) loadTrackComparison();
       });
     }
 
+    [referenceSelect, compareSelect].forEach((selectEl) => {
+      if (!selectEl) return;
+      selectEl.addEventListener("change", () => {
+        referenceMethod = normalizeMethod(referenceSelect.value);
+        compareMethod = normalizeMethod(compareSelect.value);
+        syncOverlayControlText();
+        updateTrackUrl();
+        if (comparisonMode) loadTrackComparison();
+      });
+    });
+
+    if (comparisonViewSelect) {
+      comparisonViewSelect.addEventListener("change", () => {
+        comparisonView = comparisonViewSelect.value === "side_by_side" ? "side_by_side" : "overlay";
+        applyTrackDisplayMode();
+        updateTrackUrl();
+        if (comparisonMode) loadTrackComparison();
+      });
+    }
+
+    if (comparisonModeToggle) {
+      comparisonModeToggle.addEventListener("change", () => {
+        comparisonMode = comparisonModeToggle.checked;
+        applyTrackDisplayMode();
+        updateTrackUrl();
+        if (comparisonMode) loadTrackComparison();
+      });
+    }
+
+    if (referenceOpacitySlider) {
+      referenceOpacitySlider.addEventListener("input", () => {
+        referenceOpacity = clampOpacityPercent(referenceOpacitySlider.value, referenceOpacity);
+        syncOverlayControlText();
+        updateTrackUrl();
+        if (comparisonMode && comparisonView === "overlay") loadTrackComparison();
+      });
+    }
+
+    if (compareOpacitySlider) {
+      compareOpacitySlider.addEventListener("input", () => {
+        compareOpacity = clampOpacityPercent(compareOpacitySlider.value, compareOpacity);
+        syncOverlayControlText();
+        updateTrackUrl();
+        if (comparisonMode && comparisonView === "overlay") loadTrackComparison();
+      });
+    }
+
+    function loadTrackComparison() {
+      if (!comparisonMode) return;
+      const status = document.getElementById("track-comparison-status");
+      if (status) {
+        status.textContent = `Comparing ${formatMethodLabel(compareMethod)} against ${formatMethodLabel(referenceMethod)}…`;
+      }
+      Promise.all([
+        getJSON(`/api/tracks/${encodeURIComponent(trackName)}/analysis?method=${encodeURIComponent(referenceMethod)}`),
+        getJSON(`/api/tracks/${encodeURIComponent(trackName)}/analysis?method=${encodeURIComponent(compareMethod)}`),
+        vehiclePromise,
+      ])
+        .then(([referencePayload, comparePayload, vehicleConfig]) => {
+          renderComparisonMetricCards(referencePayload, comparePayload);
+          renderTrackComparison(
+            referencePayload,
+            comparePayload,
+            comparisonView,
+            vehicleConfig,
+            {
+              referenceOpacity: referenceOpacity / 100,
+              compareOpacity: compareOpacity / 100,
+            },
+          );
+          renderSpeedComparison(referencePayload, comparePayload);
+          renderLongAccelComparison(referencePayload, comparePayload);
+          renderCurvatureComparison(referencePayload, comparePayload);
+          if (status) {
+            status.textContent = `Compared ${formatMethodLabel(compareMethod)} against ${formatMethodLabel(referenceMethod)}.`;
+          }
+        })
+        .catch((error) => {
+          if (status) status.textContent = `Failed to load comparison: ${error.message}`;
+        });
+    }
+
+    applyTrackDisplayMode();
     updateTrackUrl();
     loadTrackDetail();
+    if (comparisonMode) loadTrackComparison();
   }
 
-  function renderMetricCards(payload) {
-    const container = document.getElementById("metric-cards");
-    const m = payload.metrics;
+  function renderComparisonMetricCards(referencePayload, comparePayload) {
+    const container = document.getElementById("comparison-metric-cards");
+    if (!container) return;
+    const ref = referencePayload.metrics;
+    const cmp = comparePayload.metrics;
+    const referenceEvents = getEventCounts(referencePayload);
+    const compareEvents = getEventCounts(comparePayload);
+    const lapDelta = cmp.performance.lap_time_s - ref.performance.lap_time_s;
+    const lapDeltaPct = percentDelta(cmp.performance.lap_time_s, ref.performance.lap_time_s);
     const cards = [
-      ["Lap time", formatNumber(m.performance.lap_time_s), "s"],
-      ["Avg speed", formatNumber(m.performance.average_speed_mps), "m/s"],
-      ["Max speed", formatNumber(m.performance.max_speed_mps), "m/s"],
-      ["Min speed", formatNumber(m.performance.min_speed_mps), "m/s"],
-      ["Lap length", formatNumber(m.geometry.total_length_m), "m"],
-      ["Closure gap", formatNumber(m.geometry.closure_gap_m, 4), "m"],
-      ["κ rms", m.geometry.rms_curvature.toExponential(2), "1/m"],
-      ["Corner severity", formatNumber(m.geometry.corner_severity_index, 5), ""],
-      ["|aₓ| mean", formatNumber(m.performance.mean_abs_long_accel_mps2), "m/s²"],
-      ["Lat-limit fraction", formatNumber(m.performance.lateral_limit_fraction * 100, 1), "%"],
-      ["Accel / coast / brake", `${(m.performance.accel_fraction*100).toFixed(0)} / ${(m.performance.coast_fraction*100).toFixed(0)} / ${(m.performance.brake_fraction*100).toFixed(0)}`, "%"],
-      ["Phase transitions", m.performance.phase_transition_count, ""],
+      ["Lap time Δ", `${formatSigned(lapDelta)} s`, lapDelta],
+      ["Lap time Δ%", `${formatSigned(lapDeltaPct, 2)}%`, lapDeltaPct],
+      ["Lap length Δ", `${formatSigned(cmp.geometry.total_length_m - ref.geometry.total_length_m)} m`, cmp.geometry.total_length_m - ref.geometry.total_length_m],
+      ["κ rms Δ", (cmp.geometry.rms_curvature - ref.geometry.rms_curvature).toExponential(2), cmp.geometry.rms_curvature - ref.geometry.rms_curvature],
+      ["Accel points Δ", formatSigned(compareEvents.accel - referenceEvents.accel, 0), compareEvents.accel - referenceEvents.accel],
+      ["Brake points Δ", formatSigned(compareEvents.brake - referenceEvents.brake, 0), compareEvents.brake - referenceEvents.brake],
+      ["Phase transitions Δ", formatSigned(compareEvents.transitions - referenceEvents.transitions, 0), compareEvents.transitions - referenceEvents.transitions],
+      ["Mean |aₓ| Δ", `${formatSigned(cmp.performance.mean_abs_long_accel_mps2 - ref.performance.mean_abs_long_accel_mps2)} m/s²`, cmp.performance.mean_abs_long_accel_mps2 - ref.performance.mean_abs_long_accel_mps2],
     ];
     container.innerHTML = cards
-      .map(
-        ([label, value, unit]) =>
-          `<div class="metric-card"><div class="label">${label}</div>` +
-          `<div class="value">${value}<span class="unit">${unit}</span></div></div>`,
-      )
+      .map(([label, value, delta]) => {
+        const className = delta > 0 ? "delta-positive" : delta < 0 ? "delta-negative" : "";
+        return `<div class="metric-card ${className}"><div class="label">${label}</div><div class="value">${value}</div></div>`;
+      })
       .join("");
   }
 
-  function renderTrackMap(payload) {
-    const track = payload.track;
-    const speed = payload.speed;
-    const nodeSpeed = speed.final_speed_mps.slice(0, payload.profile.x_m.length);
+  function renderTrackComparison(referencePayload, comparePayload, view, vehicleConfig, overlayOpacity) {
+    const overlayPanel = document.getElementById("comparison-overlay-panel");
+    const sidePanel = document.getElementById("comparison-side-by-side-panel");
+    if (!overlayPanel || !sidePanel) return;
+    const sideBySide = view === "side_by_side";
+    overlayPanel.hidden = sideBySide;
+    sidePanel.hidden = !sideBySide;
+    const speedRange = sharedSpeedRange(vehicleConfig, referencePayload, comparePayload);
+    if (sideBySide) {
+      renderSingleComparisonMap(
+        "plot-track-comparison-reference",
+        referencePayload,
+        referencePayload.method,
+        speedRange,
+      );
+      renderSingleComparisonMap(
+        "plot-track-comparison-compare",
+        comparePayload,
+        comparePayload.method,
+        speedRange,
+      );
+      const referenceMap = document.getElementById("plot-track-comparison-reference");
+      const compareMap = document.getElementById("plot-track-comparison-compare");
+      if (referenceMap) delete referenceMap.dataset.zoomSyncBound;
+      if (compareMap) delete compareMap.dataset.zoomSyncBound;
+      bindMapZoomSync("plot-track-comparison-reference", "plot-track-comparison-compare");
+      return;
+    }
+    renderOverlayComparisonMap(referencePayload, comparePayload, speedRange, overlayOpacity);
+  }
+
+  function boundaryTraces(track) {
     const boundaries = computeTrackBoundaries(track);
-    const events = extractTrackEvents(payload);
-    const startArrow = computeStartArrow(payload);
-    const traces = [
+    return [
       {
         x: wrapClosed(boundaries.left.map((point) => point.x)),
         y: wrapClosed(boundaries.left.map((point) => point.y)),
         mode: "lines",
-        line: { color: "#667085", width: 1.2 },
+        line: { color: "#667085", width: 1.1 },
         name: "Left boundary",
         hoverinfo: "skip",
       },
@@ -374,65 +968,145 @@
         x: wrapClosed(boundaries.right.map((point) => point.x)),
         y: wrapClosed(boundaries.right.map((point) => point.y)),
         mode: "lines",
-        line: { color: "#667085", width: 1.2 },
+        line: { color: "#667085", width: 1.1 },
         name: "Right boundary",
         hoverinfo: "skip",
       },
+    ];
+  }
+
+  function renderOverlayComparisonMap(referencePayload, comparePayload, speedRange, overlayOpacity) {
+    const div = document.getElementById("plot-track-comparison-overlay");
+    if (!div || !window.Plotly) return;
+    const referenceSpeed = referencePayload.speed.final_speed_mps.slice(0, referencePayload.profile.x_m.length);
+    const compareSpeed = comparePayload.speed.final_speed_mps.slice(0, comparePayload.profile.x_m.length);
+    const referenceOpacity = overlayOpacity.referenceOpacity;
+    const compareOpacity = overlayOpacity.compareOpacity;
+    const referenceEvents = extractTrackEvents(referencePayload);
+    const compareEvents = extractTrackEvents(comparePayload);
+    const startArrow = computeStartArrow(referencePayload);
+
+    function eventTrace(points, text, colorRgb, opacity, position, name, hoverPrefix) {
+      return {
+        x: points.map((point) => point.x),
+        y: points.map((point) => point.y),
+        mode: "markers+text",
+        marker: {
+          size: 10,
+          color: `rgba(${colorRgb},${opacity})`,
+          symbol: text === "B" ? "diamond" : "circle",
+          line: { color: "#0f1115", width: 1 },
+        },
+        text: points.map(() => text),
+        textposition: position,
+        textfont: {
+          color: `rgba(${colorRgb},${Math.max(opacity, 0.45)})`,
+          size: 11,
+        },
+        hovertext: points.map(
+          (point) => `${hoverPrefix}<br>s=${formatNumber(point.s)} m<br>a=${formatNumber(point.value)} m/s²`,
+        ),
+        hoverinfo: "text",
+        name,
+      };
+    }
+
+    const traces = [
+      ...boundaryTraces(referencePayload.track),
       {
-        x: wrapClosed(payload.profile.x_m),
-        y: wrapClosed(payload.profile.y_m),
+        x: wrapClosed(referencePayload.profile.x_m),
+        y: wrapClosed(referencePayload.profile.y_m),
         mode: "lines",
-        line: { color: "rgba(255,255,255,0.28)", width: 0.9 },
-        name: "Trajectory",
+        line: { color: `rgba(255,255,255,${Math.max(0.12, referenceOpacity * 0.65)})`, width: 1.0 },
+        name: `${formatMethodLabel(referencePayload.method)} path`,
         hoverinfo: "skip",
       },
       {
-        x: payload.profile.x_m,
-        y: payload.profile.y_m,
+        x: referencePayload.profile.x_m,
+        y: referencePayload.profile.y_m,
         mode: "markers",
         marker: {
           size: 5,
-          color: nodeSpeed,
+          color: referenceSpeed,
           colorscale: TURBO_SPEED_COLORSCALE,
-          colorbar: { title: "Speed (m/s)", thickness: 14 },
+          cmin: speedRange.cmin,
+          cmax: speedRange.cmax,
+          showscale: true,
+          colorbar: { title: "Speed (m/s)", thickness: 12, len: 0.72, x: 1.02 },
+          opacity: referenceOpacity,
         },
-        text: nodeSpeed.map(
-          (v, i) => `s=${formatNumber(payload.speed.s_nodes_m[i])} m<br>v=${formatNumber(v)} m/s`,
+        text: referenceSpeed.map(
+          (value, index) => `${formatMethodLabel(referencePayload.method)}<br>s=${formatNumber(referencePayload.speed.s_nodes_m[index])} m<br>v=${formatNumber(value)} m/s`,
         ),
         hoverinfo: "text",
-        name: "Speed sample",
+        name: `${formatMethodLabel(referencePayload.method)} speed`,
       },
       {
-        x: events.accel.map((point) => point.x),
-        y: events.accel.map((point) => point.y),
-        mode: "markers+text",
-        marker: { size: 10, color: "#58d68d", line: { color: "#0f1115", width: 1 } },
-        text: events.accel.map(() => "A"),
-        textposition: "top center",
-        textfont: { color: "#58d68d", size: 11 },
-        hovertext: events.accel.map(
-          (point) => `Accel point<br>s=${formatNumber(point.s)} m<br>a=${formatNumber(point.value)} m/s²`,
+        x: wrapClosed(comparePayload.profile.x_m),
+        y: wrapClosed(comparePayload.profile.y_m),
+        mode: "lines",
+        line: { color: `rgba(255,255,255,${Math.max(0.12, compareOpacity * 0.65)})`, width: 1.0 },
+        name: `${formatMethodLabel(comparePayload.method)} path`,
+        hoverinfo: "skip",
+      },
+      {
+        x: comparePayload.profile.x_m,
+        y: comparePayload.profile.y_m,
+        mode: "markers",
+        marker: {
+          size: 5,
+          color: compareSpeed,
+          colorscale: TURBO_SPEED_COLORSCALE,
+          cmin: speedRange.cmin,
+          cmax: speedRange.cmax,
+          showscale: false,
+          opacity: compareOpacity,
+        },
+        text: compareSpeed.map(
+          (value, index) => `${formatMethodLabel(comparePayload.method)}<br>s=${formatNumber(comparePayload.speed.s_nodes_m[index])} m<br>v=${formatNumber(value)} m/s`,
         ),
         hoverinfo: "text",
-        name: "Accel points",
+        name: `${formatMethodLabel(comparePayload.method)} speed`,
       },
+      eventTrace(
+        referenceEvents.accel,
+        "A",
+        "88,214,141",
+        referenceOpacity,
+        "top center",
+        `${formatMethodLabel(referencePayload.method)} accel points`,
+        `${formatMethodLabel(referencePayload.method)} accel point`,
+      ),
+      eventTrace(
+        referenceEvents.brake,
+        "B",
+        "255,107,107",
+        referenceOpacity,
+        "bottom center",
+        `${formatMethodLabel(referencePayload.method)} brake points`,
+        `${formatMethodLabel(referencePayload.method)} brake point`,
+      ),
+      eventTrace(
+        compareEvents.accel,
+        "A",
+        "88,214,141",
+        compareOpacity,
+        "top center",
+        `${formatMethodLabel(comparePayload.method)} accel points`,
+        `${formatMethodLabel(comparePayload.method)} accel point`,
+      ),
+      eventTrace(
+        compareEvents.brake,
+        "B",
+        "255,107,107",
+        compareOpacity,
+        "bottom center",
+        `${formatMethodLabel(comparePayload.method)} brake points`,
+        `${formatMethodLabel(comparePayload.method)} brake point`,
+      ),
       {
-        x: events.brake.map((point) => point.x),
-        y: events.brake.map((point) => point.y),
-        mode: "markers+text",
-        marker: { size: 10, color: "#ff6b6b", symbol: "diamond", line: { color: "#0f1115", width: 1 } },
-        text: events.brake.map(() => "B"),
-        textposition: "bottom center",
-        textfont: { color: "#ff6b6b", size: 11 },
-        hovertext: events.brake.map(
-          (point) => `Brake point<br>s=${formatNumber(point.s)} m<br>a=${formatNumber(point.value)} m/s²`,
-        ),
-        hoverinfo: "text",
-        name: "Brake points",
-      },
-      {
-        x: [payload.profile.x_m[0]],
-        y: [payload.profile.y_m[0]],
+        x: [referencePayload.profile.x_m[0], comparePayload.profile.x_m[0]],
+        y: [referencePayload.profile.y_m[0], comparePayload.profile.y_m[0]],
         mode: "markers",
         marker: { size: 10, color: "#ff4040", symbol: "x" },
         name: "Start (highlight)",
@@ -441,10 +1115,10 @@
       },
     ];
     Plotly.newPlot(
-      "plot-track-map",
+      div,
       traces,
       Object.assign({}, PLOT_LAYOUT_DEFAULTS, {
-        margin: { l: 40, r: 28, t: 28, b: 40 },
+        margin: { l: 40, r: 88, t: 28, b: 40 },
         yaxis: { scaleanchor: "x", scaleratio: 1, title: "y (m)" },
         xaxis: { title: "x (m)" },
         showlegend: true,
@@ -480,6 +1154,183 @@
           },
         ],
       }),
+      { responsive: true },
+    );
+  }
+
+  function renderSingleComparisonMap(plotId, payload, method, speedRange) {
+    const div = document.getElementById(plotId);
+    if (!div || !window.Plotly) return;
+    const figure = buildTrackMapFigure(payload, speedRange, {
+      title: formatMethodLabel(method),
+      showLegend: true,
+      showColorBar: true,
+      colorBarTitle: "Speed (m/s)",
+      margin: { l: 40, r: 58, t: 42, b: 40 },
+    });
+    Plotly.newPlot(
+      div,
+      figure.traces,
+      figure.layout,
+      { responsive: true },
+    );
+  }
+
+  function bindMapZoomSync(firstId, secondId) {
+    const first = document.getElementById(firstId);
+    const second = document.getElementById(secondId);
+    if (!first || !second || first.dataset.zoomSyncBound === "1") return;
+    first.dataset.zoomSyncBound = "1";
+    second.dataset.zoomSyncBound = "1";
+    let syncing = false;
+    const keys = ["xaxis.range[0]", "xaxis.range[1]", "yaxis.range[0]", "yaxis.range[1]", "xaxis.autorange", "yaxis.autorange"];
+
+    function relay(source, target, event) {
+      if (syncing || !event) return;
+      const hasAxisChange = keys.some((key) => Object.prototype.hasOwnProperty.call(event, key));
+      if (!hasAxisChange) return;
+      syncing = true;
+      const sourceXRange = source.layout?.xaxis?.range;
+      const sourceYRange = source.layout?.yaxis?.range;
+      const update = {};
+      if (Array.isArray(sourceXRange) && sourceXRange.length === 2) {
+        update["xaxis.range[0]"] = sourceXRange[0];
+        update["xaxis.range[1]"] = sourceXRange[1];
+      }
+      if (Array.isArray(sourceYRange) && sourceYRange.length === 2) {
+        update["yaxis.range[0]"] = sourceYRange[0];
+        update["yaxis.range[1]"] = sourceYRange[1];
+      }
+      Plotly.relayout(target, update)
+        .catch(() => undefined)
+        .finally(() => {
+          syncing = false;
+        });
+    }
+
+    first.on("plotly_relayout", (event) => relay(first, second, event));
+    second.on("plotly_relayout", (event) => relay(second, first, event));
+  }
+
+  function renderSpeedComparison(referencePayload, comparePayload) {
+    const div = document.getElementById("plot-speed-comparison");
+    if (!div || !window.Plotly) return;
+    const traces = [referencePayload, comparePayload].map((payload) => ({
+      x: payload.speed.s_nodes_m,
+      y: payload.speed.final_speed_mps,
+      mode: "lines",
+      line: { color: methodColor(payload.method), width: 2.2 },
+      name: formatMethodLabel(payload.method),
+    }));
+    Plotly.newPlot(
+      div,
+      traces,
+      Object.assign({}, PLOT_LAYOUT_DEFAULTS, {
+        xaxis: { title: "Arc length s (m)" },
+        yaxis: { title: "Speed (m/s)" },
+        hovermode: "x unified",
+      }),
+      { responsive: true },
+    );
+  }
+
+  function renderLongAccelComparison(referencePayload, comparePayload) {
+    const div = document.getElementById("plot-long-accel-comparison");
+    if (!div || !window.Plotly) return;
+    const traces = [
+      {
+        x: referencePayload.speed.s_midpoints_m,
+        y: referencePayload.speed.forward_longitudinal_limit_mps2,
+        mode: "lines",
+        line: { color: "#4caf50", dash: "dot", width: 1.2 },
+        name: "Drive limit",
+      },
+      {
+        x: referencePayload.speed.s_midpoints_m,
+        y: referencePayload.speed.braking_longitudinal_limit_mps2.map((value) => -value),
+        mode: "lines",
+        line: { color: "#e57373", dash: "dot", width: 1.2 },
+        name: "Brake limit",
+      },
+      ...[referencePayload, comparePayload].map((payload) => ({
+        x: payload.speed.s_midpoints_m,
+        y: payload.speed.longitudinal_accel_mps2,
+        mode: "lines",
+        line: { color: methodColor(payload.method), width: 2.1 },
+        name: formatMethodLabel(payload.method),
+      })),
+    ];
+    Plotly.newPlot(
+      div,
+      traces,
+      Object.assign({}, PLOT_LAYOUT_DEFAULTS, {
+        xaxis: { title: "Arc length s (m)" },
+        yaxis: { title: "Longitudinal a (m/s²)" },
+        hovermode: "x unified",
+      }),
+      { responsive: true },
+    );
+  }
+
+  function renderCurvatureComparison(referencePayload, comparePayload) {
+    const div = document.getElementById("plot-curvature-comparison");
+    if (!div || !window.Plotly) return;
+    const traces = [referencePayload, comparePayload].map((payload) => ({
+      x: payload.profile.s_m,
+      y: payload.profile.curvature_1_per_m,
+      mode: "lines",
+      line: { color: methodColor(payload.method), width: 1.8 },
+      name: formatMethodLabel(payload.method),
+    }));
+    Plotly.newPlot(
+      div,
+      traces,
+      Object.assign({}, PLOT_LAYOUT_DEFAULTS, {
+        xaxis: { title: "Arc length s (m)" },
+        yaxis: { title: "Curvature (1/m)" },
+        hovermode: "x unified",
+      }),
+      { responsive: true },
+    );
+  }
+
+  function renderMetricCards(payload) {
+    const container = document.getElementById("metric-cards");
+    const m = payload.metrics;
+    const cards = [
+      ["Lap time", formatNumber(m.performance.lap_time_s), "s"],
+      ["Avg speed", formatNumber(m.performance.average_speed_mps), "m/s"],
+      ["Max speed", formatNumber(m.performance.max_speed_mps), "m/s"],
+      ["Min speed", formatNumber(m.performance.min_speed_mps), "m/s"],
+      ["Lap length", formatNumber(m.geometry.total_length_m), "m"],
+      ["Closure gap", formatNumber(m.geometry.closure_gap_m, 4), "m"],
+      ["κ rms", m.geometry.rms_curvature.toExponential(2), "1/m"],
+      ["Corner severity", formatNumber(m.geometry.corner_severity_index, 5), ""],
+      ["|aₓ| mean", formatNumber(m.performance.mean_abs_long_accel_mps2), "m/s²"],
+      ["Lat-limit fraction", formatNumber(m.performance.lateral_limit_fraction * 100, 1), "%"],
+      ["Accel / coast / brake", `${(m.performance.accel_fraction*100).toFixed(0)} / ${(m.performance.coast_fraction*100).toFixed(0)} / ${(m.performance.brake_fraction*100).toFixed(0)}`, "%"],
+      ["Phase transitions", m.performance.phase_transition_count, ""],
+    ];
+    container.innerHTML = cards
+      .map(
+        ([label, value, unit]) =>
+          `<div class="metric-card"><div class="label">${label}</div>` +
+          `<div class="value">${value}<span class="unit">${unit}</span></div></div>`,
+      )
+      .join("");
+  }
+
+  function renderTrackMap(payload, speedRange) {
+    const figure = buildTrackMapFigure(payload, speedRange, {
+      showLegend: true,
+      showColorBar: true,
+      colorBarTitle: "Speed (m/s)",
+      margin: { l: 40, r: 28, t: 28, b: 40 },
+    });
+    Plotly.newPlot(
+      "plot-track-map",
+      figure.traces,
+      figure.layout,
       { responsive: true },
     );
   }

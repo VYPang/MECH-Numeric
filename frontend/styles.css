@@ -51,6 +51,51 @@ header h1 {
   border-radius: 6px;
 }
 
+.compact-controls {
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.checkbox-label {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.toggle-label {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.overlay-controls {
+  align-items: flex-start;
+}
+
+.overlay-control {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 260px) auto;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+}
+
+.overlay-control input[type="range"] {
+  width: 100%;
+}
+
+.overlay-value {
+  min-width: 44px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.checkbox-label input {
+  accent-color: var(--accent);
+}
+
 .vehicle-summary {
   color: var(--muted);
   font-size: 13px;
@@ -72,6 +117,15 @@ section h2 {
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.section-heading-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 
 .table-wrapper {
@@ -139,6 +193,11 @@ td a {
   min-height: 360px;
 }
 
+.compact-plot {
+  min-height: 320px;
+  margin-bottom: 12px;
+}
+
 .track-map-frame {
   width: min(34vw, 540px);
   max-width: 100%;
@@ -152,10 +211,97 @@ td a {
   min-height: 0;
 }
 
-@media (max-width: 900px) {
+#plot-track-comparison-overlay,
+#plot-track-comparison-reference,
+#plot-track-comparison-compare {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  min-height: 0;
+}
+
+.comparison-track-map-frame {
+  width: min(42vw, 600px);
+  margin-bottom: 16px;
+}
+
+#comparison-overlay-panel .comparison-track-map-frame {
+  width: min(50vw, 680px);
+  max-width: 100%;
+  margin: 0 auto 16px;
+}
+
+#comparison-content.comparison-mode-active {
+  margin-top: 0;
+}
+
+#comparison-content.comparison-mode-active #comparison-side-by-side-panel .comparison-track-map-frame {
+  width: 100%;
+  max-width: none;
+}
+
+#comparison-content.comparison-mode-active #comparison-side-by-side-panel #plot-track-comparison-reference,
+#comparison-content.comparison-mode-active #comparison-side-by-side-panel #plot-track-comparison-compare {
+  min-height: 480px;
+}
+
+.comparison-map-grid {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 16px;
+  align-items: start;
+}
+
+.comparison-map-grid .track-map-frame {
+  flex: 1 1 0;
+  width: calc(50% - 8px);
+  max-width: calc(50% - 8px);
+  min-width: 0;
+}
+
+.comparison-table-wrapper {
+  max-height: 620px;
+}
+
+.comparison-metric-grid {
+  margin-bottom: 16px;
+}
+
+.comparison-metric-grid .metric-card.delta-positive .value {
+  color: #ffb86c;
+}
+
+.comparison-metric-grid .metric-card.delta-negative .value {
+  color: #58d68d;
+}
+
+#plot-speed-comparison,
+#plot-long-accel-comparison,
+#plot-curvature-comparison {
+  margin-top: 16px;
+}
+
+@media (max-width: 700px) {
   .track-map-frame {
     width: 100%;
     min-width: 0;
+  }
+
+  .comparison-map-grid {
+    flex-direction: column;
+  }
+
+  .comparison-map-grid .track-map-frame {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .overlay-control {
+    grid-template-columns: 1fr;
+  }
+
+  .overlay-value {
+    text-align: left;
   }
 }
 

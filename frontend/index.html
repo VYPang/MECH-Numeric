@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Trajectory Analysis Dashboard</title>
   <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
   <header>
@@ -58,6 +59,43 @@
         </table>
       </div>
       <p id="rankings-status" class="status"></p>
+    </section>
+
+    <section>
+      <div class="section-heading-row">
+        <h2>Method comparison</h2>
+        <div class="controls compact-controls">
+          <label>
+            Reference:
+            <select id="comparison-reference-select"></select>
+          </label>
+          <label>
+            Compare:
+            <select id="comparison-compare-select"></select>
+          </label>
+        </div>
+      </div>
+      <div id="plot-difficulty-comparison" class="plot compact-plot"></div>
+      <div class="table-wrapper comparison-table-wrapper">
+        <table id="comparison-table">
+          <thead>
+            <tr>
+              <th data-key="track_name">Track</th>
+              <th data-key="reference_rank">Ref rank</th>
+              <th data-key="compare_rank">Compare rank</th>
+              <th data-key="rank_shift">Rank shift</th>
+              <th data-key="difficulty_delta">Difficulty Δ</th>
+              <th data-key="lap_time_delta_s">Lap Δ (s)</th>
+              <th data-key="lap_time_delta_pct">Lap Δ (%)</th>
+              <th data-key="transition_delta">Transitions Δ</th>
+              <th data-key="rms_curvature_delta">κ<sub>rms</sub> Δ</th>
+              <th data-key="length_delta_m">Length Δ (m)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="comparison-status" class="status"></p>
     </section>
   </main>
 

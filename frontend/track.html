@@ -11,7 +11,7 @@
   <header>
     <a id="track-back-link" class="back-link" href="/">&larr; Back to rankings</a>
     <h1 id="track-title">Track detail</h1>
-    <div class="controls">
+    <div class="controls" id="single-method-controls">
       <label>
         Method:
         <select id="track-method-select">
@@ -23,36 +23,93 @@
       </label>
       <p id="track-subtitle" class="subtitle"></p>
     </div>
+    <div class="controls compact-controls comparison-controls">
+      <label class="checkbox-label toggle-label">
+        <input id="track-comparison-mode-toggle" type="checkbox" />
+        Compare mode
+      </label>
+      <label>
+        Reference:
+        <select id="track-reference-select"></select>
+      </label>
+      <label>
+        Compare:
+        <select id="track-compare-select"></select>
+      </label>
+      <label>
+        Map view:
+        <select id="track-comparison-view-select">
+          <option value="side_by_side" selected>Side by side</option>
+          <option value="overlay">Overlay</option>
+        </select>
+      </label>
+    </div>
+    <div id="comparison-overlay-controls" class="controls compact-controls overlay-controls" hidden>
+      <label class="overlay-control">
+        <span id="reference-opacity-label">Reference opacity</span>
+        <input id="reference-opacity-slider" type="range" min="10" max="100" step="5" value="55" />
+        <span id="reference-opacity-value" class="overlay-value">55%</span>
+      </label>
+      <label class="overlay-control">
+        <span id="compare-opacity-label">Compare opacity</span>
+        <input id="compare-opacity-slider" type="range" min="10" max="100" step="5" value="85" />
+        <span id="compare-opacity-value" class="overlay-value">85%</span>
+      </label>
+    </div>
   </header>
 
   <main>
-    <section class="metric-grid" id="metric-cards"></section>
+    <div id="single-track-content">
+      <section class="metric-grid" id="metric-cards"></section>
 
-    <section class="track-map-section">
-      <h2>Track map and speed envelope</h2>
-      <div class="track-map-frame">
-        <div id="plot-track-map" class="plot"></div>
+      <section class="track-map-section">
+        <h2>Track map and speed envelope</h2>
+        <div class="track-map-frame">
+          <div id="plot-track-map" class="plot"></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>Speed profile</h2>
+        <div id="plot-speed" class="plot"></div>
+      </section>
+
+      <section>
+        <h2>Longitudinal acceleration</h2>
+        <div id="plot-long-accel" class="plot"></div>
+      </section>
+
+      <section>
+        <h2>Curvature</h2>
+        <div id="plot-curvature" class="plot"></div>
+      </section>
+
+      <section>
+        <h2>Numerics</h2>
+        <div id="numerics"></div>
+      </section>
+    </div>
+
+    <section id="comparison-content" hidden>
+      <h2>Method comparison</h2>
+      <section class="metric-grid comparison-metric-grid" id="comparison-metric-cards"></section>
+      <div id="comparison-overlay-panel">
+        <div class="track-map-frame comparison-track-map-frame">
+          <div id="plot-track-comparison-overlay" class="plot"></div>
+        </div>
       </div>
-    </section>
-
-    <section>
-      <h2>Speed profile</h2>
-      <div id="plot-speed" class="plot"></div>
-    </section>
-
-    <section>
-      <h2>Longitudinal acceleration</h2>
-      <div id="plot-long-accel" class="plot"></div>
-    </section>
-
-    <section>
-      <h2>Curvature</h2>
-      <div id="plot-curvature" class="plot"></div>
-    </section>
-
-    <section>
-      <h2>Numerics</h2>
-      <div id="numerics"></div>
+      <div id="comparison-side-by-side-panel" class="comparison-map-grid" hidden>
+        <div class="track-map-frame comparison-track-map-frame">
+          <div id="plot-track-comparison-reference" class="plot"></div>
+        </div>
+        <div class="track-map-frame comparison-track-map-frame">
+          <div id="plot-track-comparison-compare" class="plot"></div>
+        </div>
+      </div>
+      <div id="plot-speed-comparison" class="plot"></div>
+      <div id="plot-long-accel-comparison" class="plot"></div>
+      <div id="plot-curvature-comparison" class="plot"></div>
+      <p id="track-comparison-status" class="status"></p>
     </section>
   </main>
 
