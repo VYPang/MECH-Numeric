@@ -11,6 +11,7 @@ from .config import load_vehicle_config
 from .curvature import compare_raw_and_resampled_curvature, validate_curvature_on_circle
 from .data_loader import list_track_names, load_track
 from .geometry import audit_track
+from .path_optimization import plot_optimization_results, run_iterative_optimization
 from .plots import (
     save_all_tracks_integration_sensitivity_plot,
     save_audit_plots,
@@ -124,6 +125,25 @@ def _render_speed_profile_table(track_name: str, result) -> None:
     table.add_row("Acceleration residual (m/s^2)", f"{result.residuals.acceleration_mps2:.6e}")
     table.add_row("Braking residual (m/s^2)", f"{result.residuals.braking_mps2:.6e}")
     table.add_row("Friction-circle residual (m/s^2)", f"{result.residuals.friction_circle_mps2:.6e}")
+    console.print(table)
+
+
+def _render_optimization_table(track_name: str, history) -> None:
+    baseline = history[0]
+    final = history[-1]
+    max_offset_m = max(abs(float(value)) for value in final.e_opt) if len(final.e_opt) else 0.0
+
+    table = Table(title=f"{track_name} Path Optimization")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", justify="right")
+    table.add_row("Iterations completed", str(final.iteration))
+    table.add_row("Baseline lap time (s)", f"{baseline.lap_time_s:.3f}")
+    table.add_row("Final lap time (s)", f"{final.lap_time_s:.3f}")
+    table.add_row("Lap time delta (s)", f"{final.lap_time_s - baseline.lap_time_s:+.3f}")
+    table.add_row("Baseline path length (m)", f"{baseline.total_length_m:.3f}")
+    table.add_row("Final path length (m)", f"{final.total_length_m:.3f}")
+    table.add_row("Path length delta (m)", f"{final.total_length_m - baseline.total_length_m:+.3f}")
+    table.add_row("Max lateral offset (m)", f"{max_offset_m:.3f}")
     console.print(table)
 
 
@@ -308,6 +328,51 @@ def analyze_track_command(
 
     if save_plots:
         saved_paths = save_speed_profile_plots(track_data, result)
+        console.print("[green]Saved plots:[/green]")
+        for path in saved_paths:
+            console.print(f"- {Path(path)}")
+
+
+@app.command("optimize-path")
+def optimize_path_command(
+    track: str = typer.Option(..., "--track", "-t", prompt="Track name"),
+    point_count: int | None = typer.Option(None, "--point-count", help="Override the optimizer resampled point count."),
+    max_iters: int = typer.Option(3, "--max-iters", help="Maximum number of optimization iterations."),
+    tol: float = typer.Option(1e-3, "--tol", help="Stop when the lap-time change falls below this threshold."),
+    reg_lambda: float | None = typer.Option(None, "--reg-lambda", help="Quadratic regularization on the lateral offset. Defaults to the vehicle config value."),
+    save_plots: bool = typer.Option(True, "--save-plots/--no-save-plots", help="Save overlay and convergence plots."),
+) -> None:
+    """Run the teammate path-optimization flow against the current project code."""
+    track_name = _validate_track_name(track)
+    config = load_vehicle_config()
+    regularization_lambda = config.path_optimization_reg_lambda if reg_lambda is None else reg_lambda
+    if max_iters <= 0:
+        raise typer.BadParameter("Maximum iterations must be positive.")
+    if tol < 0.0:
+        raise typer.BadParameter("Tolerance must be non-negative.")
+    if regularization_lambda < 0.0:
+        raise typer.BadParameter("Regularization must be non-negative.")
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        progress.add_task(description=f"Optimizing path for {track_name}", total=None)
+        track_data = load_track(track_name)
+        history = run_iterative_optimization(
+            track_data,
+            config,
+            n_points=point_count,
+            max_iters=max_iters,
+            tol=tol,
+            reg_lambda=regularization_lambda,
+        )
+
+    _render_optimization_table(track_name, history)
+
+    if save_plots:
+        saved_paths = plot_optimization_results(history=history, track=track_data)
         console.print("[green]Saved plots:[/green]")
         for path in saved_paths:
             console.print(f"- {Path(path)}")

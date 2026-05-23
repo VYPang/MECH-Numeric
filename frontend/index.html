@@ -3,22 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Centerline Baseline Dashboard</title>
+  <title>Trajectory Analysis Dashboard</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
   <header>
-    <h1>Centerline Baseline Dashboard</h1>
+    <h1>Trajectory Analysis Dashboard</h1>
     <p class="subtitle">
-      Three-pass centerline speed profile. Used as a baseline for
-      future trajectory optimization comparisons.
+      Review precomputed results for both centerline baseline and the
+      minimum-curvature trajectory method.
     </p>
     <div class="controls">
       <label>
         Method:
-        <select id="method-select" disabled>
+        <select id="method-select">
           <option value="centerline_baseline" selected>Centerline baseline</option>
-          <option value="trajectory_optimized" disabled>Optimized trajectory (coming soon)</option>
+          <option value="min_curvature">Min curvature (A)</option>
+          <option value="min_lap_time">Min lap time (B)</option>
+          <option value="min_curvature_custom">Min curvature custom (C)</option>
         </select>
       </label>
       <span id="vehicle-summary" class="vehicle-summary"></span>

@@ -16,6 +16,15 @@
     [1.0, "#d7191c"],
   ];
 
+  const METHOD_LABELS = {
+    centerline_baseline: "Centerline baseline",
+    min_curvature: "Min curvature (A)",
+    min_lap_time: "Min lap time (B)",
+    min_curvature_custom: "Min curvature custom (C)",
+  };
+
+  const DEFAULT_METHOD = "centerline_baseline";
+
   function getJSON(url) {
     return fetch(url).then((response) => {
       if (!response.ok) {
@@ -36,6 +45,24 @@
     if (Math.abs(value) >= 1000) return value.toFixed(1);
     if (Math.abs(value) >= 10) return value.toFixed(2);
     return value.toFixed(decimals);
+  }
+
+  function normalizeMethod(method) {
+    return METHOD_LABELS[method] ? method : DEFAULT_METHOD;
+  }
+
+  function formatMethodLabel(method) {
+    return METHOD_LABELS[normalizeMethod(method)];
+  }
+
+  function populateMethodSelect(selectEl, selectedMethod) {
+    if (!selectEl) return;
+    const method = normalizeMethod(selectedMethod);
+    selectEl.innerHTML = Object.entries(METHOD_LABELS)
+      .map(([value, label]) => `<option value="${value}">${label}</option>`)
+      .join("");
+    selectEl.value = method;
+    selectEl.disabled = false;
   }
 
   function wrapClosed(values) {
@@ -133,6 +160,9 @@
   // ---------- Overview ----------
 
   function renderOverview() {
+    const params = new URLSearchParams(window.location.search);
+    const methodSelect = document.getElementById("method-select");
+    const tbody = document.querySelector("#rankings-table tbody");
     getJSON("/api/vehicle")
       .then((vehicle) => {
         const el = document.getElementById("vehicle-summary");
@@ -146,76 +176,94 @@
       .catch(() => {});
 
     const status = document.getElementById("rankings-status");
-    status.textContent = "Loading rankings (first solve may take a moment)…";
+    let activeMethod = normalizeMethod(params.get("method"));
+    let rows = [];
+    let sortKey = "difficulty_score";
+    let sortDir = -1;
 
-    getJSON("/api/rankings?method=centerline_baseline")
-      .then((payload) => {
-        const tbody = document.querySelector("#rankings-table tbody");
-        tbody.innerHTML = "";
+    populateMethodSelect(methodSelect, activeMethod);
 
-        let rows = payload.rows.slice();
-        let sortKey = "difficulty_score";
-        let sortDir = -1;
-
-        function rerender() {
-          rows.sort((a, b) => {
-            const aValue = getNested(a, sortKey);
-            const bValue = getNested(b, sortKey);
-            if (typeof aValue === "string") {
-              return sortDir * aValue.localeCompare(bValue);
-            }
-            return sortDir * ((aValue ?? 0) - (bValue ?? 0));
-          });
-          tbody.innerHTML = rows
-            .map((row) => {
-              const href = `/track?name=${encodeURIComponent(row.track_name)}`;
-              return (
-                `<tr data-track="${row.track_name}">` +
-                `<td><a href="${href}">${row.track_name}</a></td>` +
-                `<td>${formatNumber(row.difficulty_score)}</td>` +
-                `<td>${formatNumber(row.performance.lap_time_s)}</td>` +
-                `<td>${formatNumber(row.performance.average_speed_mps)}</td>` +
-                `<td>${formatNumber(row.performance.max_speed_mps)}</td>` +
-                `<td>${formatNumber(row.performance.min_speed_mps)}</td>` +
-                `<td>${formatNumber(row.performance.speed_stdev_mps)}</td>` +
-                `<td>${formatNumber(row.performance.mean_abs_long_accel_mps2)}</td>` +
-                `<td>${formatNumber(row.performance.lateral_limit_fraction * 100)}</td>` +
-                `<td>${formatNumber(row.geometry.total_length_m)}</td>` +
-                `<td>${row.geometry.rms_curvature.toExponential(2)}</td>` +
-                `<td>${formatNumber(row.geometry.corner_severity_index, 5)}</td>` +
-                `</tr>`
-              );
-            })
-            .join("");
-
-          tbody.querySelectorAll("tr").forEach((tr) => {
-            tr.addEventListener("click", (event) => {
-              if (event.target.tagName === "A") return;
-              window.location.href = `/track?name=${encodeURIComponent(tr.dataset.track)}`;
-            });
-          });
+    function rerender() {
+      rows.sort((a, b) => {
+        const aValue = getNested(a, sortKey);
+        const bValue = getNested(b, sortKey);
+        if (typeof aValue === "string") {
+          return sortDir * aValue.localeCompare(bValue);
         }
-
-        document.querySelectorAll("#rankings-table th").forEach((th) => {
-          th.addEventListener("click", () => {
-            const key = th.dataset.key;
-            if (!key) return;
-            if (sortKey === key) {
-              sortDir *= -1;
-            } else {
-              sortKey = key;
-              sortDir = key === "track_name" ? 1 : -1;
-            }
-            rerender();
-          });
-        });
-
-        rerender();
-        status.textContent = `Loaded ${rows.length} tracks.`;
-      })
-      .catch((error) => {
-        status.textContent = `Failed to load rankings: ${error.message}`;
+        return sortDir * ((aValue ?? 0) - (bValue ?? 0));
       });
+      tbody.innerHTML = rows
+        .map((row) => {
+          const href = `/track?name=${encodeURIComponent(row.track_name)}&method=${encodeURIComponent(activeMethod)}`;
+          return (
+            `<tr data-track="${row.track_name}">` +
+            `<td><a href="${href}">${row.track_name}</a></td>` +
+            `<td>${formatNumber(row.difficulty_score)}</td>` +
+            `<td>${formatNumber(row.performance.lap_time_s)}</td>` +
+            `<td>${formatNumber(row.performance.average_speed_mps)}</td>` +
+            `<td>${formatNumber(row.performance.max_speed_mps)}</td>` +
+            `<td>${formatNumber(row.performance.min_speed_mps)}</td>` +
+            `<td>${formatNumber(row.performance.speed_stdev_mps)}</td>` +
+            `<td>${formatNumber(row.performance.mean_abs_long_accel_mps2)}</td>` +
+            `<td>${formatNumber(row.performance.lateral_limit_fraction * 100)}</td>` +
+            `<td>${formatNumber(row.geometry.total_length_m)}</td>` +
+            `<td>${row.geometry.rms_curvature.toExponential(2)}</td>` +
+            `<td>${formatNumber(row.geometry.corner_severity_index, 5)}</td>` +
+            `</tr>`
+          );
+        })
+        .join("");
+
+      tbody.querySelectorAll("tr").forEach((tr) => {
+        tr.addEventListener("click", (event) => {
+          if (event.target.tagName === "A") return;
+          window.location.href = `/track?name=${encodeURIComponent(tr.dataset.track)}&method=${encodeURIComponent(activeMethod)}`;
+        });
+      });
+    }
+
+    function loadRankings() {
+      status.textContent = `Loading ${formatMethodLabel(activeMethod)} rankings…`;
+      tbody.innerHTML = "";
+      getJSON(`/api/rankings?method=${encodeURIComponent(activeMethod)}`)
+        .then((payload) => {
+          activeMethod = normalizeMethod(payload.method);
+          if (methodSelect) methodSelect.value = activeMethod;
+          rows = payload.rows.slice();
+          rerender();
+          status.textContent = `Loaded ${rows.length} tracks for ${formatMethodLabel(activeMethod)}.`;
+        })
+        .catch((error) => {
+          status.textContent = `Failed to load rankings: ${error.message}`;
+        });
+    }
+
+    if (methodSelect) {
+      methodSelect.addEventListener("change", () => {
+        activeMethod = normalizeMethod(methodSelect.value);
+        params.set("method", activeMethod);
+        window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+        loadRankings();
+      });
+    }
+
+    document.querySelectorAll("#rankings-table th").forEach((th) => {
+      if (th.dataset.bound === "1") return;
+      th.dataset.bound = "1";
+      th.addEventListener("click", () => {
+        const key = th.dataset.key;
+        if (!key) return;
+        if (sortKey === key) {
+          sortDir *= -1;
+        } else {
+          sortKey = key;
+          sortDir = key === "track_name" ? 1 : -1;
+        }
+        rerender();
+      });
+    });
+
+    loadRankings();
   }
 
   // ---------- Track detail ----------
@@ -223,30 +271,61 @@
   function renderTrackDetail() {
     const params = new URLSearchParams(window.location.search);
     const trackName = params.get("name");
+    const methodSelect = document.getElementById("track-method-select");
+    const backLink = document.getElementById("track-back-link");
     if (!trackName) {
       document.getElementById("track-title").textContent = "Missing track name";
       return;
     }
 
-    document.getElementById("track-title").textContent = trackName;
-    document.getElementById("track-subtitle").textContent = "Loading baseline solution…";
+    let activeMethod = normalizeMethod(params.get("method"));
 
-    getJSON(`/api/tracks/${encodeURIComponent(trackName)}/baseline`)
-      .then((payload) => {
-        document.getElementById("track-subtitle").textContent =
-          `Method: ${payload.method} · Geometry: ${payload.geometry_method}`;
-        renderMetricCards(payload);
-        renderTrackMap(payload);
-        renderSpeedPlot(payload);
-        renderLongAccelPlot(payload);
-        renderCurvaturePlot(payload);
-        renderNumerics(payload);
-        attachLinkedHover(payload);
-      })
-      .catch((error) => {
-        document.getElementById("track-subtitle").textContent =
-          `Failed to load: ${error.message}`;
+    document.getElementById("track-title").textContent = trackName;
+    populateMethodSelect(methodSelect, activeMethod);
+
+    function updateTrackUrl() {
+      params.set("name", trackName);
+      params.set("method", activeMethod);
+      window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+      if (backLink) {
+        backLink.href = `/?method=${encodeURIComponent(activeMethod)}`;
+      }
+    }
+
+    function loadTrackDetail() {
+      document.getElementById("track-subtitle").textContent =
+        `Loading ${formatMethodLabel(activeMethod)} solution…`;
+      getJSON(`/api/tracks/${encodeURIComponent(trackName)}/analysis?method=${encodeURIComponent(activeMethod)}`)
+        .then((payload) => {
+          activeMethod = normalizeMethod(payload.method);
+          if (methodSelect) methodSelect.value = activeMethod;
+          updateTrackUrl();
+          document.getElementById("track-subtitle").textContent =
+            `Geometry: ${payload.geometry_method}`;
+          renderMetricCards(payload);
+          renderTrackMap(payload);
+          renderSpeedPlot(payload);
+          renderLongAccelPlot(payload);
+          renderCurvaturePlot(payload);
+          renderNumerics(payload);
+          attachLinkedHover(payload);
+        })
+        .catch((error) => {
+          document.getElementById("track-subtitle").textContent =
+            `Failed to load: ${error.message}`;
+        });
+    }
+
+    if (methodSelect) {
+      methodSelect.addEventListener("change", () => {
+        activeMethod = normalizeMethod(methodSelect.value);
+        updateTrackUrl();
+        loadTrackDetail();
       });
+    }
+
+    updateTrackUrl();
+    loadTrackDetail();
   }
 
   function renderMetricCards(payload) {

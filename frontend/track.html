@@ -9,9 +9,20 @@
 </head>
 <body>
   <header>
-    <a class="back-link" href="/">&larr; Back to rankings</a>
+    <a id="track-back-link" class="back-link" href="/">&larr; Back to rankings</a>
     <h1 id="track-title">Track detail</h1>
-    <p id="track-subtitle" class="subtitle"></p>
+    <div class="controls">
+      <label>
+        Method:
+        <select id="track-method-select">
+          <option value="centerline_baseline" selected>Centerline baseline</option>
+          <option value="min_curvature">Min curvature (A)</option>
+          <option value="min_lap_time">Min lap time (B)</option>
+          <option value="min_curvature_custom">Min curvature custom (C)</option>
+        </select>
+      </label>
+      <p id="track-subtitle" class="subtitle"></p>
+    </div>
   </header>
 
   <main>
